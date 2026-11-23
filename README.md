@@ -123,3 +123,7 @@ explicit timestamp and error. Genesis replay is covered by a Postgres integratio
 test, including refusal to publish an unreconciled ledger and checkpoint reuse.
 Pool-transfer totals must also reconcile exactly to Swap SKY input/output totals
 within the transaction; mixed liquidity operations and donations are unclassified.
+Before publishing, each tracked nonzero address is checked with historical
+`SKY.balanceOf` on initial catch-up; later runs check all changed addresses,
+including those reduced to zero. Supply totals alone cannot detect a missing
+ordinary transfer, so this provides a separate per-address reconciliation.

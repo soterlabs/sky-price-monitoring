@@ -31,7 +31,7 @@ export const excludedLabels:Record<string,string>={...exchangeLabels,[ZERO]:'Min
   '0x67eadb3288ccede034ce95b0511dcc65cf630bb6':'SKY vesting',
 };
 export interface HolderEvent {block:number;index:number;tx:string;kind:'liquid'|'position'|'vote'|'delegate';from:string;to:string;raw:string}
-export interface HolderState {block:number;hash:string;balances:Record<string,string>;positions:Record<string,string>;votes:Record<string,string>;owners:Record<string,string>;delegates:string[];complete:boolean}
+export interface HolderState {block:number;hash:string;balances:Record<string,string>;positions:Record<string,string>;votes:Record<string,string>;owners:Record<string,string>;delegates:string[];complete:boolean;verifiedBalances?:boolean}
 export const initialState=():HolderState=>({block:START-1,hash:'',balances:{},positions:{},votes:{},owners:{},delegates:[],complete:false});
 function add(map:Record<string,string>,a:string,n:bigint){if(a===ZERO)return;const v=BigInt(map[a]??'0')+n;if(v===0n)delete map[a];else map[a]=String(v);}
 export function applyEvent(state:HolderState,e:HolderEvent,sign=1n){
@@ -112,6 +112,7 @@ export async function collectHolders(store:Store,rpc:Rpc,budgetMs=300000){
   let state=initialState();for(const row of saved){if(row.payload.block<=target&&(await rpc.block(BigInt(row.payload.block))).hash===row.payload.hash){state=row.payload;break;}}
   if(saved.length&&state.block<START)throw new Error('No canonical holder checkpoint; rebuild required');
   if(saved[0]&&saved[0].payload.block!==state.block)await rewind(store,state.block);
+  const validateAll=!state.complete||!state.verifiedBalances,changed=new Set<string>();
   while(state.block<target&&Date.now()-started<budgetMs){
     const from=state.block+1,to=Math.min(from+(from<25000000?99999:19999),target);
     const logs=await rpc.logs(BigInt(from),BigInt(to),[SKY,LSSKY,ENGINE,CHIEF,DELEGATE_FACTORY],Object.values(t),10000n);
@@ -132,13 +133,17 @@ export async function collectHolders(store:Store,rpc:Rpc,budgetMs=300000){
       }else if((contract===CHIEF||delegates.has(contract))&&(sig===t.lock||sig===t.free)){
         const user=addr(l.topics[1]!);e={...base,kind:contract===CHIEF?'vote':'delegate',from:sig===t.lock?(contract===CHIEF?ZERO:contract):user,to:sig===t.free?(contract===CHIEF?ZERO:contract):user,raw:String(v[0]!)};
       }
-      if(e){events.push(e);applyEvent(state,e);}
+      if(e){events.push(e);applyEvent(state,e);if(e.kind==='liquid'){changed.add(e.from);changed.add(e.to);}}
     }
     state.delegates=[...delegates];state.block=to;state.hash=(await rpc.block(BigInt(to))).hash;state.complete=false;
     if(to===target){
       if(state.hash!==latest.hash)throw new Error('Holder target reorganized during indexing');
       const supply=BigInt(await readWord(rpc,SKY,'totalSupply()',target)),sum=Object.values(state.balances).reduce((s,v)=>s+BigInt(v),0n);
       if(sum!==supply||Object.values(state.balances).some(v=>BigInt(v)<0n))throw new Error('Holder transfer ledger does not reconcile to SKY total supply');
+      const addresses=[...new Set([...(validateAll?Object.keys(state.balances):[]),...changed])].filter(a=>a!==ZERO);
+      const observed=await rpc.many(addresses.map(address=>({method:'eth_call',params:[{to:SKY,data:selector('balanceOf(address)')+address.slice(2).padStart(64,'0')},toHex(target)]}))) as string[];
+      if(addresses.some((address,i)=>BigInt(observed[i]!)!==BigInt(state.balances[address]??'0')))throw new Error('Holder address balances do not reconcile to onchain balances');
+      state.verifiedBalances=true;
       const receipts=BigInt(await readWord(rpc,LSSKY,'totalSupply()',target)),positions=Object.values(state.positions).reduce((s,v)=>s+BigInt(v),0n);
       if(receipts!==positions||Object.values(state.positions).some(v=>BigInt(v)<0n))throw new Error('Holder staking ledger does not reconcile');
       if(Object.values(state.votes).some(v=>BigInt(v)<0n))throw new Error('Negative governance owner position');
