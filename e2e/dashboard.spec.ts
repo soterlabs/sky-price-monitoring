@@ -37,3 +37,11 @@ test('collection and failures do not display a healthy status',async({page})=>{
   await page.goto('/');await expect(page.locator('#status-title')).toHaveText('Collecting onchain history');await expect(page.locator('#spot')).toHaveText('—');
   await page.unroute('**/api/dashboard?*');await page.route('**/api/dashboard?*',route=>route.fulfill({status:503,json:{error:'Unavailable'}}));await page.click('#refresh');await expect(page.locator('#status-title')).toContainText('Unable to refresh');
 });
+test('explicit refresh reads live headlines without replacing saved history, and handles failure',async({page})=>{
+  let reads=0;await page.route('**/api/dashboard?*',route=>route.fulfill({json:data('24h')}));
+  await page.route('**/api/live',route=>{reads++;return route.fulfill({json:{block:'26480000',asOf:'2026-11-23T04:00:12Z',latest:{...data('24h').latest,price:.05,tvlUsds:9000000,usds:4500000}}});});
+  await page.goto('/');await expect(page.locator('#spot')).toHaveText('0.04153');expect(reads).toBe(0);
+  const twap=await page.locator('#twap').textContent();await page.click('#refresh');await expect(page.locator('#spot')).toHaveText('0.05000');await expect(page.locator('#live-status')).toContainText('26,480,000');await expect(page.locator('#twap')).toHaveText(twap!);expect(reads).toBe(1);
+  await page.selectOption('#period','7d');await expect(page.locator('#spot')).toHaveText('0.04153');await expect(page.locator('#live-status')).toBeHidden();expect(reads).toBe(1);
+  await page.unroute('**/api/live');await page.route('**/api/live',route=>route.fulfill({status:503,json:{error:'Unavailable'}}));await page.click('#refresh');await expect(page.locator('#live-status')).toContainText('Live read unavailable');await expect(page.locator('#spot')).toHaveText('0.04153');
+});

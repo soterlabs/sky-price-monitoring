@@ -45,6 +45,15 @@ export class Rpc {
     const v=await this.many([{method:'eth_chainId',params:[]},...['token0()','token1()','factory()'].map(s=>read(POOL,s,n)),read(SKY,'decimals()',n),read(USDS,'decimals()',n),read(FACTORY,'getPair(address,address)',n,wordAddr(SKY)+wordAddr(USDS))]) as string[];
     if(BigInt(v[0]!)!==1n||addr(v[1]!)!==SKY||addr(v[2]!)!==USDS||addr(v[3]!)!==FACTORY||BigInt(v[4]!)!==18n||BigInt(v[5]!)!==18n||addr(v[6]!)!==POOL)throw new Error('Pool identity verification failed');
   }
+  async liveSnapshot():Promise<Snapshot> {
+    const head=await this.block('latest'),n=BigInt(head.number);
+    await this.verify(n);
+    const values=await this.many([read(POOL,'getReserves()',n),read(POOL,'price0CumulativeLast()',n),read(POOL,'totalSupply()',n),read(SPLITTER,'flapper()',n)]) as string[];
+    const [sky,usds,reserveTime]=words(values[0]!);
+    if(!sky||!usds||reserveTime===undefined)throw new Error('Invalid live pool reserves');
+    if((await this.block(n)).hash!==head.hash)throw new Error('Live block was reorganized; retry');
+    return {time:Number(BigInt(head.timestamp)),block:String(n),hash:head.hash,blockTime:Number(BigInt(head.timestamp)),skyRaw:String(sky),usdsRaw:String(usds),reserveTime:Number(reserveTime),cumulativeRaw:String(BigInt(values[1]!)),lpRaw:String(BigInt(values[2]!)),flapper:addr(values[3]!)};
+  }
   async boundaries(times:number[],head:Block):Promise<Snapshot[]> {
     const hn=BigInt(head.number),ht=Number(BigInt(head.timestamp));
     let guesses=times.map(t=>hn-BigInt(Math.floor((ht-t)/12)));
