@@ -82,7 +82,14 @@ export class Rpc {
   async logs(from:bigint,to:bigint,address:string|string[],topic0:string[],span=2000n):Promise<Log[]> {
     if(from>to)return [];
     const calls:Call[]=[];for(let n=from;n<=to;n+=span)calls.push({method:'eth_getLogs',params:[{address,fromBlock:toHex(n),toBlock:toHex(n+span-1n<to?n+span-1n:to),topics:[topic0]}]});
-    const groups=await this.many(calls) as Log[][];
+    let groups:Log[][];
+    try{groups=await this.many(calls) as Log[][];}
+    catch(error){
+      // Historical token activity can exceed provider result limits even when
+      // the requested block span is accepted. Retry with smaller exact ranges.
+      if(span<=1n||!(error instanceof Error)||!/RPC eth_getLogs failed \((-32602|-32005|-32000)\)/.test(error.message))throw error;
+      return this.logs(from,to,address,topic0,span/2n);
+    }
     return [...new Map(groups.flat().filter(l=>!l.removed).map(l=>[`${l.transactionHash}:${l.logIndex}`,l])).values()].sort((a,b)=>Number(BigInt(a.blockNumber)-BigInt(b.blockNumber))||Number(BigInt(a.logIndex)-BigInt(b.logIndex)));
   }
   async events(snapshots:Snapshot[]):Promise<PoolEvent[]> {
