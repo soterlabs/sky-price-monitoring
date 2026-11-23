@@ -169,6 +169,7 @@ export async function collectHolders(store:Store,rpc:Rpc,budgetMs=300000){
  finally{try{await connection.query('SELECT pg_advisory_unlock(734902,2)');}finally{connection.release();}}
 }
 export async function holderData(store:Store,range:Period){
- await schema(store);const [view,job]=await Promise.all([store.pool.query('SELECT payload FROM sky_holder_views WHERE period=$1',[range]),store.pool.query("SELECT attempted_at,succeeded_at,error FROM sky_jobs WHERE name='holders'")]);
- return {data:view.rows[0]?.payload??null,job:job.rows[0]??null,excludedLabels,exchangeLabels};
+ await schema(store);const [view,job,indexed,latest]=await Promise.all([store.pool.query('SELECT payload FROM sky_holder_views WHERE period=$1',[range]),store.pool.query("SELECT attempted_at,succeeded_at,error FROM sky_jobs WHERE name='holders'"),store.pool.query('SELECT block FROM sky_holder_checkpoints ORDER BY block DESC LIMIT 1'),store.latest()]);
+ const block=Number(indexed.rows[0]?.block??START-1),target=latest?Number(latest.block):START;
+ return {data:view.rows[0]?.payload??null,job:job.rows[0]??null,progress:{block,target,percent:Math.max(0,Math.min(100,(block-START+1)/(target-START+1)*100))},excludedLabels,exchangeLabels};
 }
