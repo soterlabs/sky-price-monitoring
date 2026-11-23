@@ -27,8 +27,13 @@ it('persists idempotent overlapping collection, serializes collectors, and deriv
     assert.equal(short.coverage?.complete,true);assert.equal(short.fresh,true);
     assert.equal(long.coverage?.complete,false);assert.equal(short.summary?.buybackCount,138);
     assert.equal(long.summary?.buybackCount,138);assert.equal(long.summary?.volumeUsds,short.summary?.volumeUsds);
-    // Reprocessing a segment invalidates affected materialized days.
-    await a.saveSegment(fixture.snapshots,fixture.events,points);assert.equal((await a.daily(0,Number.MAX_SAFE_INTEGER)).length,0);
+    // Unchanged overlap preserves finalized days; actual corrections invalidate
+    // only the affected day before the daily worker rebuilds it.
+    await a.saveSegment(fixture.snapshots,fixture.events,points);assert.equal((await a.daily(0,Number.MAX_SAFE_INTEGER)).length,2);
+    const firstBuyback=fixture.events.find(e=>e.buyback)!;
+    const correctedEvents=fixture.events.map(e=>e===firstBuyback?{...e,buyback:false}:e);
+    await a.saveSegment(fixture.snapshots,correctedEvents,makePoints(fixture.snapshots,correctedEvents));
+    assert.equal((await a.daily(0,Number.MAX_SAFE_INTEGER)).length,1);
     await a.attempt('collector');await a.failure('collector','Upstream unavailable');assert.equal((await dashboardData(a,'24h',now)).fresh,false);
     await a.attempt('collector');assert.equal((await dashboardData(a,'24h',now)).fresh,false,'a retry is not yet a successful refresh');
     await a.success('collector');assert.equal((await dashboardData(a,'24h',now)).fresh,true);

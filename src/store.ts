@@ -25,9 +25,12 @@ export class Store {
     await this.initialize();const c=await this.pool.connect(),key=1;
     // Rollups wait for collection so a concurrent segment replacement cannot
     // invalidate a day just before an older rollup overwrites it.
-    const result=name==='daily'
-      ?(await c.query('SELECT pg_advisory_lock(734902,$1)',[key]),{rows:[{locked:true}]})
-      :await c.query<{locked:boolean}>('SELECT pg_try_advisory_lock(734902,$1) AS locked',[key]);
+    let result:{rows:{locked:boolean}[]};
+    try {
+      result=name==='daily'
+        ?(await c.query('SELECT pg_advisory_lock(734902,$1)',[key]),{rows:[{locked:true}]})
+        :await c.query<{locked:boolean}>('SELECT pg_try_advisory_lock(734902,$1) AS locked',[key]);
+    }catch(e){c.release();throw e;}
     if (!result.rows[0]?.locked) {c.release();return false;}
     try {await fn();return true;} finally {try {await c.query('SELECT pg_advisory_unlock(734902,$1)',[key]);} finally {c.release();}}
   }
@@ -54,10 +57,15 @@ export class Store {
     const a=snapshots[0]!,b=snapshots.at(-1)!,c=await this.pool.connect();
     try {
       await c.query('BEGIN');
+      // Canonical overlap is normally unchanged: preserve finalized daily rows.
+      // Only a genuinely new/corrected bucket invalidates its materialized day.
+      await c.query(`DELETE FROM sky_daily WHERE day IN (
+        SELECT DISTINCT ((v->>'from')::bigint/86400)*86400 FROM jsonb_array_elements($1::jsonb) v
+        LEFT JOIN sky_buckets b ON b.time=(v->>'through')::bigint WHERE b.payload IS DISTINCT FROM v
+      )`,[JSON.stringify(points)]);
       await c.query('DELETE FROM sky_events WHERE block_number > $1 AND block_number <= $2',[a.block,b.block]);
       await c.query('DELETE FROM sky_snapshots WHERE time > $1 AND time <= $2',[a.time,b.time]);
       await c.query('DELETE FROM sky_buckets WHERE time > $1 AND time <= $2',[a.time,b.time]);
-      await c.query('DELETE FROM sky_daily WHERE day >= $1 AND day <= $2',[Math.floor(a.time/86400)*86400,Math.floor((b.time-1)/86400)*86400]);
       await c.query(`INSERT INTO sky_snapshots(time,block_number,block_hash,payload)
         SELECT (v->>'time')::bigint,(v->>'block')::bigint,v->>'hash',v FROM jsonb_array_elements($1::jsonb) v
         ON CONFLICT(time) DO UPDATE SET block_number=EXCLUDED.block_number,block_hash=EXCLUDED.block_hash,payload=EXCLUDED.payload`,[JSON.stringify(snapshots)]);
