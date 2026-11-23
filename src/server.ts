@@ -21,7 +21,7 @@ const files=new Map([
 ]);
 const rpc=new Rpc(c.rpcUrl);
 let livePending:Promise<unknown>|undefined;
-function live(){return livePending??=rpc.liveSnapshot().then(s=>({asOf:new Date(s.blockTime*1000).toISOString(),block:s.block,hash:s.hash,latest:{price:spot(s),...depth(s),block:s.block,blockTime:s.blockTime}})).finally(()=>{livePending=undefined;});}
+function live(){return livePending??=rpc.liveSnapshot().then(s=>{if(Date.now()-s.blockTime*1000>120000)throw new Error('RPC latest head is stale');return {asOf:new Date(s.blockTime*1000).toISOString(),block:s.block,hash:s.hash,latest:{price:spot(s),...depth(s),block:s.block,blockTime:s.blockTime}};}).finally(()=>{livePending=undefined;});}
 const cache=new Map<Period,{at:number;data:Awaited<ReturnType<typeof dashboardData>>}>();
 const pending=new Map<Period,Promise<Awaited<ReturnType<typeof dashboardData>>>>();
 async function data(p:Period){const hit=cache.get(p);if(hit&&Date.now()-hit.at<15000)return hit.data;let task=pending.get(p);if(!task){task=dashboardData(store,p).then(d=>{cache.set(p,{at:Date.now(),data:d});return d;}).finally(()=>pending.delete(p));pending.set(p,task);}return task;}
