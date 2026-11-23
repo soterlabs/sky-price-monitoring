@@ -81,3 +81,8 @@ The tracked `.railway/railway.ts` describes the web service, two cron jobs and d
 - Collector: `BACKFILL_DAYS=7`, `CONFIRMATIONS=12`.
 
 GitHub `main` is the deployment source. The Docker image's default command starts the web server; cron services override it with `npm run collect` and `npm run rollup` and exit when done. Trigger initial jobs with `railway cron run --service sky-collector --yes`, then `sky-daily-rollups`.
+
+The Refresh button additionally reads the latest Ethereum block for live price,
+reserves and execution quotes, without writing to Postgres. Charts, price change,
+trading flows and buybacks remain based on saved intervals. Live values show their
+own block timestamp and revert to saved values on the next ordinary refresh.
