@@ -10,11 +10,11 @@ export async function collect(store:Store,rpc:Rpc,backfillDays:number,confirmati
     try {
       const head=await rpc.block('latest');
       const safe=await rpc.block(BigInt(head.number)-BigInt(confirmations));
-      const end=Math.floor(Number(BigInt(safe.timestamp))/600)*600;
+      const end=Math.floor(Number(BigInt(safe.timestamp))/300)*300;
       await rpc.verify(BigInt(safe.number));
       const latest=await store.latest();
       if(latest&&latest.time>end)throw new Error('RPC confirmed head is behind the saved checkpoint');
-      let from=end-backfillDays*86400;
+      let from=Math.floor((end-backfillDays*86400)/600)*600;
       if(latest) {
         // Re-read overlapping windows. If the anchor was reorganized, walk back
         // to a matching saved block before replacing any data.
@@ -28,13 +28,15 @@ export async function collect(store:Store,rpc:Rpc,backfillDays:number,confirmati
           throw new Error('No canonical anchor within the saved overlap; collection paused');
         })();
         from=anchor.time;
+        const recent=await store.points(latest.time-3600,latest.time);
+        if(recent.length!==12||recent.some(p=>p.duration!==300))from=Math.min(from,Math.floor((end-3600)/600)*600);
       }
       for(let left=from;left<end;left+=21600) {
         const right=Math.min(left+21600,end),times:number[]=[];
-        for(let time=left;time<=right;time+=600)times.push(time);
+        for(let time=left;time<=right;time+=300)times.push(time);
         const snapshots=await rpc.boundaries(times,head);
         const events=await rpc.events(snapshots);
-        const points=makePoints(snapshots,events);
+        const points=makePoints(snapshots,events,300);
         await store.saveSegment(snapshots,events,points);
         console.log(JSON.stringify({event:'collection_segment',from:new Date(left*1000).toISOString(),through:new Date(right*1000).toISOString(),buckets:points.length,events:events.length}));
       }

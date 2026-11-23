@@ -11,13 +11,13 @@ Four cards show price and true oracle TWAP, buy/sell USDS flows, verified protoc
 | Service | Schedule (UTC) | Work |
 | --- | --- | --- |
 | `sky-price-monitoring` | Always running | Read-only dashboard and JSON API |
-| `sky-collector` | `*/10 * * * *` | Index swaps and liquidity events; persist archive snapshots and ten-minute aggregates |
+| `sky-collector` | `*/5 * * * *` | Index swaps and liquidity events; persist archive snapshots and five-minute aggregates |
 | `sky-daily-rollups` | `25 0 * * *` | Materialize UTC daily aggregates; retry missing or invalidated days |
-| `Postgres` | Persistent | Snapshots, raw normalized events, ten-minute records, daily records and job health |
+| `Postgres` | Persistent | Snapshots, raw normalized events, mixed legacy ten-minute / new five-minute records, daily records and job health |
 
-First collection backfills **seven days**. It commits resumable six-hour segments. The `24h` and `7d` ranges use ten-minute points. The `30d`, `90d` and `180d` ranges use daily points, with recent days derived from current ten-minute data and today marked provisional. Longer histories grow from the initial backfill; the UI explicitly identifies incomplete coverage.
+First collection backfills **seven days**. It commits resumable six-hour segments. The `60m` range uses five-minute points. The `24h` and `7d` ranges retain ten-minute points by aggregating pairs of five-minute records. The `30d`, `90d` and `180d` ranges use daily points, with recent days derived from current interval data and today marked provisional. Longer histories grow from the initial backfill; the UI explicitly identifies incomplete coverage.
 
-The collector reads 12 confirmations behind the head and only commits full ten-minute intervals. Overlapping reruns replace events and aggregates atomically. A database advisory lock prevents concurrent collectors. Before resuming, it checks the saved block hash and can rewind to a canonical anchor within the previous day. Data stops advancing, and the dashboard shows an issue, if verification fails.
+The collector reads 12 confirmations behind the head and only commits full five-minute intervals. Overlapping reruns replace events and aggregates atomically. A database advisory lock prevents concurrent collectors. Before resuming, it checks the saved block hash and can rewind to a canonical anchor within the previous day. Data stops advancing, and the dashboard shows an issue, if verification fails.
 
 Each collection segment verifies:
 
@@ -53,12 +53,12 @@ node --env-file=.env dist/server.js
 | --- | --- | --- |
 | `DATABASE_URL` | Required | PostgreSQL connection |
 | `ETH_RPC` | Required | Ethereum archive endpoint; kept out of source control |
-| `DASHBOARD_DEFAULT_PERIOD` | `24h` | One of `24h`, `7d`, `30d`, `90d`, `180d` |
+| `DASHBOARD_DEFAULT_PERIOD` | `24h` | One of `60m`, `24h`, `7d`, `30d`, `90d`, `180d` |
 | `BACKFILL_DAYS` | `7` | Initial collection lookback (1–180); does not trim existing history |
 | `CONFIRMATIONS` | `12` | Blocks behind head before collection |
 | `PORT` | `3000` | Web listener |
 
-`GET /api/dashboard?range=24h` returns metrics, points, coverage, job health and recent swaps. `GET /healthz` checks the database. Data freshness is separate from HTTP health; saved data older than 25 minutes or a failed collector check is marked stale. The API is cached in memory for 15 seconds.
+`GET /api/dashboard?range=24h` returns metrics, points, coverage, job health and recent swaps. `GET /healthz` checks the database. Data freshness is separate from HTTP health; saved data older than 15 minutes for `60m` or 25 minutes for other ranges or a failed collector check is marked stale. The API is cached in memory for 15 seconds.
 
 ## Validation
 
@@ -89,15 +89,15 @@ own block timestamp and revert to saved values on the next ordinary refresh.
 
 ### Holder history
 
-The existing ten-minute collector also advances a resumable SKY holder index,
+The existing five-minute collector also advances a resumable SKY holder index,
 with its own advisory lock and a five-minute work budget. The first run scans
 from SKY deployment (block 20,663,735); subsequent runs resume atomic checkpoints.
 Views appear only after raw SKY balances reconcile to total supply and attributed
 Lockstake positions reconcile to lsSKY supply. Pool collection runs first and
 has separate freshness/error reporting.
 
-Holder charts share the pool's exact confirmed snapshot blocks: ten-minute
-points for 24h/7d and UTC daily points for longer ranges. Available history is
+Holder charts share the pool's exact confirmed snapshot blocks: five-minute
+points for 60m, ten-minute points for 24h/7d and UTC daily points for longer ranges. Available history is
 explicit. The initial top 100, next 900 and remaining addresses stay fixed for
 the selected window; new holders are reported separately. Retention measures
 aggregate token holdings, not cost basis or the percentage of original tokens
@@ -127,3 +127,9 @@ Before publishing, each tracked nonzero address is checked with historical
 `SKY.balanceOf` on initial catch-up; later runs check all changed addresses,
 including those reduced to zero. Supply totals alone cannot detect a missing
 ordinary transfer, so this provides a separate per-address reconciliation.
+
+On upgrade, the collector rereads at least the last hour at five-minute boundaries.
+Older ten-minute history remains valid. Ten-minute views end on ten-minute UTC
+boundaries even when the newest five-minute checkpoint ends at :05. Holder views
+rewind the ledger to that range's exact end block. The Last 60min page polls every
+five minutes; other ranges keep their existing ten-minute polling.

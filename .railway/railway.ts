@@ -15,7 +15,7 @@ export default defineRailway(() => {
   const collector = fn("sky-collector", {
     source: github("soterlabs/sky-price-monitoring"),
     start: "npm run collect",
-    deploy: { cronSchedule: "*/10 * * * *", restartPolicyType: "NEVER" },
+    deploy: { cronSchedule: "*/5 * * * *", restartPolicyType: "NEVER" },
   });
   const daily = fn("sky-daily-rollups", {
     source: github("soterlabs/sky-price-monitoring"),

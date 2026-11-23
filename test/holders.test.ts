@@ -24,3 +24,10 @@ it('leaves pool donations and transfers mixed with liquidity events unclassified
  const s=initialState();applyEvent(s,event(1,0,'liquid',ZERO,A,100));const transfers=[event(2,0,'liquid',A,POOL,30)];transfers.forEach(e=>applyEvent(s,e));
  const result=holderSeries(s,transfers,[snap(1),snap(2)],[{tx:'0x2',values:[wad(20),'0','0',wad(1)]}]);assert.equal(result.activity.sells,0);assert.equal(result.activity.otherOut,30);
 });
+
+it('rewinds a newer five-minute checkpoint for a ten-minute holder window',()=>{
+ const s=initialState();applyEvent(s,event(1,0,'liquid',ZERO,A,100));const events=[event(2,0,'liquid',A,B,10),event(3,0,'liquid',A,B,20)];events.forEach(e=>applyEvent(s,e));s.block=3;
+ const ten=holderSeries(s,events,[snap(1),snap(2)],[]),five=holderSeries(s,events,[snap(1),snap(2),snap(3)],[]);
+ assert.equal(ten.addresses.find(a=>a.address===A)!.end,90);assert.equal(five.addresses.find(a=>a.address===A)!.end,70);
+ assert.equal(ten.points[0]!.distribution.total,100);assert.equal(ten.points[0]!.distribution.holders,1);
+});

@@ -5,7 +5,7 @@ const full=n=>new Intl.NumberFormat('en-US',{maximumFractionDigits:2}).format(n)
 const price=n=>n<1?n.toFixed(5):full(n);
 const signed=n=>(n>0?'+':n<0?'−':'')+compact(Math.abs(n));
 const pct=(n,d=2)=>n==null?'—':(n<0?'−':'')+Math.abs(n).toFixed(d)+'%';
-const periodNames={'24h':'Last 24h','7d':'7 days','30d':'30 days','90d':'90 days','180d':'180 days'};
+const periodNames={'60m':'Last 60min','24h':'Last 24h','7d':'7 days','30d':'30 days','90d':'90 days','180d':'180 days'};
 const color=name=>getComputedStyle(document.documentElement).getPropertyValue('--'+name).trim();
 let current=null,controller=null,sequence=0,timer=null;
 const charts=[];
@@ -82,7 +82,7 @@ function clearPeriod(){for(const id of ['net','buyback','twap','range-price','dr
 function render(d){
   $('live-status').hidden=true;document.querySelectorAll('.live-label').forEach(el=>el.textContent='SAVED');
   current=d;const range=$('period').value;document.querySelectorAll('[data-period-label]').forEach(el=>el.textContent=periodNames[range]);
-  $('status').className='status-banner '+(d.fresh?'fresh':d.collecting?'':'stale');set('status-title',d.fresh?'Onchain data up to date':d.collecting?'Collecting onchain history':'Showing the latest saved data');set('updated',d.asOf?'As of '+new Date(d.asOf).toLocaleString(undefined,{timeZone:'UTC',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false})+' UTC':'Data refreshes every 10 minutes');
+  $('status').className='status-banner '+(d.fresh?'fresh':d.collecting?'':'stale');set('status-title',d.fresh?'Onchain data up to date':d.collecting?'Collecting onchain history':'Showing the latest saved data');set('updated',d.asOf?'As of '+new Date(d.asOf).toLocaleString(undefined,{timeZone:'UTC',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false})+' UTC':'Data refreshes every '+(range==='60m'?5:10)+' minutes');
   const jobIssue=d.jobs?.find(j=>j.error&&j.name!=='holders'),coverage=$('coverage'),notes=[];
   if(d.coverage&&!d.coverage.complete)notes.push('Available history starts '+new Date(d.coverage.actualFrom*1000).toLocaleString(undefined,{timeZone:'UTC',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})+' UTC. Figures cover the available portion of this range.');
   if(d.coverage?.provisionalToday)notes.push('Today’s daily point is provisional.');
@@ -96,7 +96,7 @@ function render(d){
 async function load(live=false){
   const seq=++sequence;controller?.abort();const requestController=new AbortController();controller=requestController;clearTimeout(timer);$('refresh').disabled=true;
   const timeout=setTimeout(()=>requestController.abort(),25000);
-  try{const r=await fetch('/api/dashboard?range='+encodeURIComponent($('period').value),{cache:'no-store',signal:requestController.signal});if(!r.ok)throw new Error('The data service is temporarily unavailable.');const d=await r.json();if(seq!==sequence)return;render(d);void loadHolders(seq,requestController.signal);timer=setTimeout(load,d.collecting?30000:600000);
+  try{const r=await fetch('/api/dashboard?range='+encodeURIComponent($('period').value),{cache:'no-store',signal:requestController.signal});if(!r.ok)throw new Error('The data service is temporarily unavailable.');const d=await r.json();if(seq!==sequence)return;render(d);void loadHolders(seq,requestController.signal);timer=setTimeout(load,d.collecting?30000:(d.refreshSeconds??600)*1000);
     if(live){
       try{const response=await fetch('/api/live',{cache:'no-store',signal:requestController.signal});if(!response.ok)throw new Error('Live read failed');const result=await response.json();if(seq!==sequence)return;
         if(d.latest&&Number(result.block)<Number(d.latest.block))throw new Error('RPC behind saved data');
@@ -158,7 +158,7 @@ class HolderChart {
 const holderCharts=[new HolderChart('retention-chart','retention'),new HolderChart('distribution-chart','distribution'),new HolderChart('holder-activity-chart','activity')];
 function renderHolders(payload){
   holderView=payload.data;holderCursor=Math.max(0,(holderView?.points.length??1)-1);const slider=$('holder-date');slider.max=String(holderCursor);slider.value=String(holderCursor);slider.disabled=!holderView;
-  const notes=[];if(!holderView)notes.push('Indexing holder history from SKY deployment'+(payload.progress?' · '+pct(payload.progress.percent,1)+' of blocks scanned':'')+'. Holder figures will appear after supply reconciliation.');else{notes.push('Holder data as of '+utc(holderView.through)+'.');if(!holderView.complete)notes.push('The selected range has partial history, starting '+utc(holderView.from)+'.');if(Date.now()-holderView.through*1000>25*60000)notes.push('Holder data is behind the latest collection.');}if(payload.job?.error)notes.push('Latest holder index issue: '+payload.job.error);set('holder-status',notes.join(' '));
+  const notes=[];if(!holderView)notes.push('Indexing holder history from SKY deployment'+(payload.progress?' · '+pct(payload.progress.percent,1)+' of blocks scanned':'')+'. Holder figures will appear after supply reconciliation.');else{notes.push('Holder data as of '+utc(holderView.through)+'.');if(!holderView.complete)notes.push('The selected range has partial history, starting '+utc(holderView.from)+'.');if(Date.now()-holderView.through*1000>($('period').value==='60m'?15:25)*60000)notes.push('Holder data is behind the latest collection.');}if(payload.job?.error)notes.push('Latest holder index issue: '+payload.job.error);set('holder-status',notes.join(' '));
   const tbody=$('holder-addresses');tbody.replaceChildren();if(holderView){holderFacts();for(const r of holderView.addresses){const tr=document.createElement('tr'),td=document.createElement('td'),a=document.createElement('a');a.href='https://etherscan.io/address/'+r.address;a.target='_blank';a.rel='noopener';a.textContent=r.address;td.append(a);tr.append(td);for(const n of [r.start,r.end,r.change]){const cell=document.createElement('td');cell.textContent=compact(n);tr.append(cell);}tbody.append(tr);}}
   else{for(const id of ['holder-change','holder-net','holder-new','holder-baseline','holder-count','holder-top10','holder-top100','holder-supply','whale-buys','whale-sells','whale-exchanges','whale-other'])set(id,'—');set('holder-date-label','—');}
   holderCharts.forEach(c=>{c.hover=-1;c.tooltip().hidden=true;c.draw();});
