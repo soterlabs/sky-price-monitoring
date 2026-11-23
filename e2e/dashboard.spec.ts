@@ -4,7 +4,7 @@ import {holderSeries,initialState,applyEvent,type HolderEvent,ZERO} from '../src
 import{makePoints,summarize,displayPoint,depth}from'../src/math.js';
 const f=JSON.parse(gunzipSync(readFileSync(new URL('../test/fixtures/study-24h.json.gz',import.meta.url))).toString());
 const points=makePoints(f.snapshots,f.events),latest=f.snapshots.at(-1);
-function holders(){const state=initialState(),a='0x'+'1'.repeat(40),b='0x'+'2'.repeat(40);applyEvent(state,{block:0,index:0,tx:'mint',kind:'liquid',from:ZERO,to:a,raw:String(1000000n*10n**18n)});const e:HolderEvent={block:Number(f.snapshots[2].block),index:0,tx:'move',kind:'liquid',from:a,to:b,raw:String(100000n*10n**18n)};applyEvent(state,e);return {data:{...holderSeries(state,[e],f.snapshots,[]),complete:true},job:null};}
+function holders(snapshots=f.snapshots){const state=initialState(),a='0x'+'1'.repeat(40),b='0x'+'2'.repeat(40);applyEvent(state,{block:0,index:0,tx:'mint',kind:'liquid',from:ZERO,to:a,raw:String(1000000n*10n**18n)});const e:HolderEvent={block:Number(f.snapshots[2].block),index:0,tx:'move',kind:'liquid',from:a,to:b,raw:String(100000n*10n**18n)};applyEvent(state,e);return {data:{...holderSeries(state,[e],snapshots,[]),complete:true},job:null};}
 function data(range:string){return{range,asOf:new Date(latest.time*1000).toISOString(),fresh:true,collecting:false,jobs:[],latest:{price:Number(latest.usdsRaw)/Number(latest.skyRaw),...depth(latest)},summary:summarize(points),points:points.map(displayPoint),coverage:{complete:range==='24h',actualFrom:points[0]!.from,provisionalToday:range!=='24h'&&range!=='7d'},trades:[{tx:f.events.find((e:any)=>e.kind==='swap').tx,time:points.at(-1)!.through,side:'buy',buyback:true,usds:5448.6,sky:120000}]};}
 for(const viewport of [{width:390,height:844},{width:1440,height:1000}]){
   test(`charts, ranges, theme and links at ${viewport.width}px`,async({page})=>{
@@ -16,7 +16,7 @@ for(const viewport of [{width:390,height:844},{width:1440,height:1000}]){
     await expect(page.getByText('How this monitor works',{exact:true})).toHaveCount(0);
     await expect(page.locator('#period')).toHaveValue('24h');await expect(page.locator('canvas')).toHaveCount(7);
     expect(await page.locator('body').evaluate(el=>el.scrollWidth)).toBeLessThanOrEqual(viewport.width);
-    for(const p of ['7d','30d','90d','180d','24h']){await page.selectOption('#period',p);await expect(page.locator('[data-period-label]').first()).toHaveText(p==='24h'?'Last 24h':p.replace('d',' days'));}
+    for(const p of ['60m','7d','30d','90d','180d','24h']){await page.selectOption('#period',p);await expect(page.locator('[data-period-label]').first()).toHaveText(p==='60m'?'Last 60min':p==='24h'?'Last 24h':p.replace('d',' days'));}
     const theme=await page.locator('html').getAttribute('data-theme');await page.click('#theme');await expect(page.locator('html')).toHaveAttribute('data-theme',theme==='dark'?'light':'dark');await page.reload();await expect(page.locator('html')).toHaveAttribute('data-theme',theme==='dark'?'light':'dark');
     await page.locator('#flow-chart').focus();await page.keyboard.press('ArrowLeft');
     const tooltip=page.locator('#flow-chart + .chart-hover');await expect(tooltip).toBeVisible();
@@ -51,4 +51,13 @@ test('explicit refresh reads live headlines without replacing saved history, and
   const twap=await page.locator('#twap').textContent();await page.click('#refresh');await expect(page.locator('#spot')).toHaveText('0.05000');await expect(page.locator('#live-status')).toContainText('26,480,000');await expect(page.locator('#twap')).toHaveText(twap!);expect(reads).toBe(1);
   await page.selectOption('#period','7d');await expect(page.locator('#spot')).toHaveText('0.04153');await expect(page.locator('#live-status')).toBeHidden();expect(reads).toBe(1);
   await page.unroute('**/api/live');await page.route('**/api/live',route=>route.fulfill({status:503,json:{error:'Unavailable'}}));await page.click('#refresh');await expect(page.locator('#live-status')).toContainText('Live read unavailable');await expect(page.locator('#spot')).toHaveText('0.04153');
+});
+test('last hour uses the shared selector, five-minute holder snapshots and five-minute polling',async({page})=>{
+  const {splitSnapshots}=await import('../test/fine-fixture.js');const snaps=splitSnapshots(f.snapshots,f.events).slice(-13),fine=makePoints(snaps,f.events.filter((e:any)=>e.time>snaps[0]!.time),300);let hourlyReads=0;
+  await page.clock.install();
+  await page.route('**/api/dashboard?*',route=>{const range=new URL(route.request().url()).searchParams.get('range');if(range==='60m'){hourlyReads++;return route.fulfill({json:{...data('60m'),refreshSeconds:300,interval:'5-minute',summary:summarize(fine),points:fine.map(displayPoint),coverage:{complete:true}}});}return route.fulfill({json:data(range!)});});
+  await page.route('**/api/holders?*',route=>{const range=new URL(route.request().url()).searchParams.get('range');return route.fulfill({json:holders(range==='60m'?snaps:f.snapshots)});});
+  await page.goto('/');await expect(page.locator('#spot')).toHaveText('0.04153');await page.selectOption('#period','60m');await expect(page.locator('[data-period-label]').first()).toHaveText('Last 60min');
+  await expect(page.locator('#period option:checked')).toHaveText('Last 60min - 5min updates');await expect(page.locator('#holder-date')).toHaveAttribute('max','12');expect(hourlyReads).toBe(1);
+  await page.clock.runFor(299000);expect(hourlyReads).toBe(1);await page.clock.runFor(2000);await expect.poll(()=>hourlyReads).toBe(2);
 });

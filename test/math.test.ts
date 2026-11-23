@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import {it} from 'node:test';
 import {readFileSync} from 'node:fs';
 import {gunzipSync} from 'node:zlib';
-import {makePoints,combine,dailyPoints,summarize,depth,cumulative,swapSide} from '../src/math.js';
+import {makePoints,combine,intervalPoints,dailyPoints,summarize,depth,cumulative,swapSide} from '../src/math.js';
+import {splitSnapshots} from './fine-fixture.js';
 import type {Snapshot,PoolEvent,Point} from '../src/types.js';
 const fixture=JSON.parse(gunzipSync(readFileSync(new URL('./fixtures/study-24h.json.gz',import.meta.url))).toString()) as {snapshots:Snapshot[];events:PoolEvent[];expected:Record<string,any>};
 const {snapshots,events,expected}=fixture;
@@ -61,4 +62,16 @@ it('does not mistake same-asset flash repayments for buying or selling',()=>{
   assert.equal(swapSide(['0','1003000000000000000','0','1000000000000000000']),'flash');
   assert.equal(swapSide(['20','10','30','0']),'buy');
   assert.equal(swapSide(['30','0','20','10']),'sell');
+});
+
+it('five-minute ledger intervals preserve exact ten-minute volume, prices, TWAP and volatility',()=>{
+ const fine=makePoints(splitSnapshots(snapshots,events),events,300),coarse=makePoints(snapshots,events),rolled=intervalPoints(fine);
+ assert.equal(fine.length,288);assert.equal(rolled.length,144);
+ for(let i=0;i<coarse.length;i++){const a=coarse[i]!,b=rolled[i]!;
+  for(const key of ['from','through','duration','open','close','high','low','buyRaw','sellRaw','buybackRaw','skyBoughtRaw','skySoldRaw','buyCount','sellCount','buybackCount','skyRaw','usdsRaw']as const)assert.equal(b[key],a[key],key);
+  assert.equal(b.complete,true);assert.ok(Math.abs(b.twap-a.twap)<1e-14);
+ }
+ const a=summarize(coarse)!,b=summarize(rolled)!;assert.equal(a.volumeUsds,b.volumeUsds);assert.equal(a.realizedVolatilityPercent,b.realizedVolatilityPercent);
+ assert.equal(intervalPoints(fine.slice(1))[0]!.complete,false,'a missing five-minute half must remain incomplete');
+ assert.throws(()=>makePoints(splitSnapshots(snapshots,events).filter((_,i)=>i!==1),events,300),/Non-consecutive/);
 });

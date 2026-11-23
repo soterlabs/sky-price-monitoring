@@ -81,8 +81,8 @@ export class Store {
     await this.pool.query(`INSERT INTO sky_daily(day,payload) VALUES($1,$2::jsonb) ON CONFLICT(day) DO UPDATE SET payload=EXCLUDED.payload,updated_at=now()`,[day,JSON.stringify(point)]);
   }
   async daysToRollup(today:number):Promise<number[]> {
-    await this.initialize();const r=await this.pool.query<{day:string}>(`SELECT DISTINCT ((b.time-600)/86400)*86400 AS day FROM sky_buckets b
-      LEFT JOIN sky_daily d ON d.day=((b.time-600)/86400)*86400 WHERE d.day IS NULL OR ((b.time-600)/86400)*86400 >= $1 ORDER BY day`,[today-86400]);return r.rows.map(r=>Number(r.day));
+    await this.initialize();const r=await this.pool.query<{day:string}>(`SELECT DISTINCT (((b.payload->>'from')::bigint)/86400)*86400 AS day FROM sky_buckets b
+      LEFT JOIN sky_daily d ON d.day=(((b.payload->>'from')::bigint)/86400)*86400 WHERE d.day IS NULL OR (((b.payload->>'from')::bigint)/86400)*86400 >= $1 ORDER BY day`,[today-86400]);return r.rows.map(r=>Number(r.day));
   }
   async recentTrades(from:number,to:number,limit=20) {
     await this.initialize();return (await this.pool.query<{payload:PoolEvent}>(`SELECT payload FROM sky_events WHERE time > $1 AND time <= $2 AND payload->>'kind'='swap' ORDER BY time DESC,log_index DESC LIMIT $3`,[from,to,limit])).rows.map(r=>r.payload);

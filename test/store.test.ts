@@ -5,6 +5,7 @@ import {readFileSync} from 'node:fs';
 import {gunzipSync} from 'node:zlib';
 import {Pool} from 'pg';
 import {Store} from '../src/store.js';
+import {splitSnapshots} from './fine-fixture.js';
 import {makePoints,dailyPoints} from '../src/math.js';
 import {dashboardData} from '../src/view.js';
 import type {Snapshot,PoolEvent} from '../src/types.js';
@@ -34,8 +35,26 @@ it('persists idempotent overlapping collection, serializes collectors, and deriv
     const correctedEvents=fixture.events.map(e=>e===firstBuyback?{...e,buyback:false}:e);
     await a.saveSegment(fixture.snapshots,correctedEvents,makePoints(fixture.snapshots,correctedEvents));
     assert.equal((await a.daily(0,Number.MAX_SAFE_INTEGER)).length,1);
+    // Upgrade only the recent hour to five-minute storage. Older windows keep
+    // ten-minute sampling and all sums; half buckets never overlap old rows.
+    const fineSnaps=splitSnapshots(fixture.snapshots,fixture.events),end=fixture.snapshots.at(-1)!.time;
+    const recent=fineSnaps.filter(s=>s.time>=end-4200),recentEvents=fixture.events.filter(e=>e.time>recent[0]!.time&&e.time<=end);
+    await a.saveSegment(recent,recentEvents,makePoints(recent,recentEvents,300));
+    const hour=await dashboardData(a,'60m',now),day=await dashboardData(a,'24h',now);
+    assert.equal(hour.points.length,12);assert.equal(hour.interval,'5-minute');assert.equal(hour.refreshSeconds,300);assert.equal(hour.coverage?.complete,true);
+    assert.equal(day.points.length,144);assert.equal(day.summary?.volumeUsds,short.summary?.volumeUsds);assert.equal(day.summary?.realizedVolatilityPercent,short.summary?.realizedVolatilityPercent);
+    assert.ok(day.points.every(p=>p.through-p.from===600));assert.ok(hour.points.every(p=>p.through-p.from===300));
+    const last=recent.at(-1)!,next={...last,time:last.time+300,block:String(BigInt(last.block)+25n)};
+    await a.saveSegment([last,next],[],makePoints([last,next],[],300));
+    assert.equal((await dashboardData(a,'24h',now)).asOf,short.asOf,'ten-minute views wait for the next ten-minute close');
+    assert.equal((await dashboardData(a,'60m',now)).asOf,new Date(next.time*1000).toISOString());
     await a.attempt('collector');await a.failure('collector','Upstream unavailable');assert.equal((await dashboardData(a,'24h',now)).fresh,false);
     await a.attempt('collector');assert.equal((await dashboardData(a,'24h',now)).fresh,false,'a retry is not yet a successful refresh');
     await a.success('collector');assert.equal((await dashboardData(a,'24h',now)).fresh,true);
   }finally{await a.close();await b.close();await admin.query(`DROP SCHEMA ${schema} CASCADE`);await admin.end();}
+});
+it('assigns a five-minute interval ending at 00:05 to its actual UTC day',{skip:!url},async()=>{
+ const admin=new Pool({connectionString:url!}),schema='sky_midnight_'+randomBytes(6).toString('hex'),u=new URL(url!);u.searchParams.set('options','-c search_path='+schema);const store=new Store(u.toString());
+ try{await admin.query(`CREATE SCHEMA ${schema}`);await store.initialize();const p={...makePoints(fixture.snapshots,fixture.events)[0]!,from:86400,through:86700,duration:300};await store.pool.query('INSERT INTO sky_buckets(time,payload) VALUES($1,$2)',[p.through,JSON.stringify(p)]);assert.deepEqual(await store.daysToRollup(864000),[86400]);}
+ finally{await store.close();await admin.query(`DROP SCHEMA ${schema} CASCADE`);await admin.end();}
 });

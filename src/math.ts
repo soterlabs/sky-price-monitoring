@@ -15,13 +15,13 @@ export function cumulative(s: Snapshot): bigint {
   const elapsed = BigInt((s.time-s.reserveTime+2**32)%2**32);
   return (BigInt(s.cumulativeRaw)+BigInt(s.usdsRaw)*Q/BigInt(s.skyRaw)*elapsed)%MOD;
 }
-export function makePoints(snapshots: Snapshot[], events: PoolEvent[]): Point[] {
+export function makePoints(snapshots: Snapshot[], events: PoolEvent[], interval:300|600=600): Point[] {
   const points: Point[]=[];
   const ordered=[...events].sort((a,b)=>Number(BigInt(a.block)-BigInt(b.block))||a.index-b.index);
   let cursor=0;
   for (let i=1;i<snapshots.length;i++) {
     const a=snapshots[i-1]!,b=snapshots[i]!;
-    if (b.time-a.time!==600) throw new Error('Non-consecutive snapshot boundaries');
+    if (b.time-a.time!==interval) throw new Error('Non-consecutive snapshot boundaries');
     let sky=BigInt(a.skyRaw),usds=BigInt(a.usdsRaw),buy=0n,sell=0n,buyback=0n,skyBought=0n,skySold=0n,skyBuyback=0n;
     let ds=0n,du=0n,lpSky=0n,lpUsds=0n,area=0n,last=a.time;
     let buyCount=0,sellCount=0,buybackCount=0,flashCount=0,flashSky=0n,flashUsds=0n,high=spot(a),low=high;
@@ -59,8 +59,8 @@ export function makePoints(snapshots: Snapshot[], events: PoolEvent[]): Point[] 
     if (BigInt(a.skyRaw)+ds!==sky||BigInt(a.usdsRaw)+du!==usds) throw new Error('Token-flow ledger does not reconcile');
     const delta=(cumulative(b)-cumulative(a)+MOD)%MOD;
     if (delta!==area) throw new Error('TWAP does not reconcile to the cumulative oracle');
-    points.push({from:a.time,through:b.time,duration:600,samples:1,complete:true,
-      open:spot(a),close:spot(b),high,low,twap:Number(delta)/Number(Q)/600,
+    points.push({from:a.time,through:b.time,duration:interval,samples:1,complete:true,
+      open:spot(a),close:spot(b),high,low,twap:Number(delta)/Number(Q)/interval,
       buyRaw:String(buy),sellRaw:String(sell),buybackRaw:String(buyback),skyBoughtRaw:String(skyBought),skySoldRaw:String(skySold),skyBuybackRaw:String(skyBuyback),
       buyCount,sellCount,buybackCount,flashCount,flashSkyRaw:String(flashSky),flashUsdsRaw:String(flashUsds),lpSkyRaw:String(lpSky),lpUsdsRaw:String(lpUsds),skyRaw:b.skyRaw,usdsRaw:b.usdsRaw,lpRaw:b.lpRaw});
   }
@@ -75,6 +75,11 @@ export function combine(points: Point[]): Point|null {
     twap:points.reduce((s,p)=>s+p.twap*p.duration,0)/duration,
     samples:points.reduce((s,p)=>s+p.samples,0),complete:points.every(p=>p.complete)&&duration===last.through-first.from,
     buyCount:points.reduce((s,p)=>s+p.buyCount,0),sellCount:points.reduce((s,p)=>s+p.sellCount,0),buybackCount:points.reduce((s,p)=>s+p.buybackCount,0),flashCount:points.reduce((s,p)=>s+(p.flashCount??0),0)};
+}
+export function intervalPoints(points:Point[],seconds=600):Point[]{
+  const groups=new Map<number,Point[]>();
+  for(const p of points){const start=Math.floor(p.from/seconds)*seconds;const rows=groups.get(start)??[];rows.push(p);groups.set(start,rows);}
+  return [...groups.entries()].sort((a,b)=>a[0]-b[0]).map(([start,rows])=>{const p=combine(rows)!;return {...p,complete:p.complete&&p.from===start&&p.through===start+seconds};});
 }
 export function dailyPoints(points: Point[]): Point[] {
   const groups=new Map<number,Point[]>();

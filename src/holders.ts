@@ -1,6 +1,6 @@
 import {toHex} from 'viem';
 import {Rpc,selector,topic} from './rpc.js';
-import {SKY,POOL,periods,type Period} from './config.js';
+import {SKY,POOL,periods,rangeSpec,type Period} from './config.js';
 import {units,swapSide} from './math.js';
 import type {Snapshot} from './types.js';
 import type {Store} from './store.js';
@@ -56,6 +56,7 @@ export function holderSeries(state:HolderState,events:HolderEvent[],snapshots:Sn
   const start=snapshots[0]!,end=snapshots.at(-1)!;
   // Work on a copy: one period must never mutate another period's ledger.
   const work:HolderState={...state,balances:{...state.balances},positions:{...state.positions},votes:{...state.votes}};
+  for(const e of events.filter(e=>e.block>Number(end.block)&&e.block<=state.block).sort((a,b)=>b.block-a.block||b.index-a.index))applyEvent(work,e,-1n);
   const ordered=events.filter(e=>e.block>Number(start.block)&&e.block<=Number(end.block)).sort((a,b)=>a.block-b.block||a.index-b.index);
   for(const e of [...ordered].reverse())applyEvent(work,e,-1n);
   const baseline=balances(work),ranked=[...baseline].sort((a,b)=>a[1]>b[1]?-1:a[1]<b[1]?1:a[0].localeCompare(b[0]));
@@ -155,13 +156,14 @@ export async function collectHolders(store:Store,rpc:Rpc,budgetMs=300000){
   if(state.block!==target||!state.complete)return;
   // Snapshot boundaries share the pool's exact confirmed blocks and granularity.
   for(const range of periods){
-    const days=range==='24h'?1:Number(range.slice(0,-1)),intraday=range==='24h'||range==='7d';
-    const requested=intraday?latest.time-days*86400:Math.floor(latest.time/86400)*86400-(days-1)*86400;
-    let snaps=await store.snapshots(requested,latest.time);if(!intraday)snaps=snaps.filter((s,i)=>i===0||s.time%86400===0||s.time===latest.time);
+    const {from:requested,end,step}=rangeSpec(range,latest.time),intraday=step<86400;
+    let snaps=await store.snapshots(requested,end);
+    if(step===600)snaps=snaps.filter(s=>s.time%600===0);
+    if(!intraday)snaps=snaps.filter((s,i)=>i===0||s.time%86400===0||s.time===end);
     if(snaps.length<2)continue;
     const events=(await store.pool.query<{payload:HolderEvent}>('SELECT payload FROM sky_holder_events WHERE block > $1 AND block <= $2 ORDER BY block,log_index',[snaps[0]!.block,latest.block])).rows.map(r=>r.payload);
     const trades=(await store.pool.query<{payload:{tx:string;values:string[]}}>(`SELECT payload FROM sky_events WHERE block_number > $1 AND block_number <= $2 AND payload->>'kind'='swap'`,[snaps[0]!.block,latest.block])).rows.map(r=>r.payload);
-    const view={...holderSeries(state,events,snaps,trades),complete:snaps[0]!.time===requested,asOf:new Date(latest.time*1000).toISOString(),requestedFrom:requested};
+    const view={...holderSeries(state,events,snaps,trades),complete:snaps[0]!.time===requested&&(!intraday||snaps.every((s,i)=>i===0||s.time-snaps[i-1]!.time===step)),asOf:new Date(end*1000).toISOString(),requestedFrom:requested};
     await store.pool.query('INSERT INTO sky_holder_views(period,payload) VALUES($1,$2) ON CONFLICT(period) DO UPDATE SET payload=EXCLUDED.payload',[range,JSON.stringify(view)]);
   }
   await store.success('holders');
