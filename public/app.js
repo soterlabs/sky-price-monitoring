@@ -32,7 +32,7 @@ class Chart {
     if(this.hover<0||!this.plot)return;
     const p=current.points[this.hover],tip=this.tooltip();tip.replaceChildren();
     const title=document.createElement('div');title.className='tooltip-title';
-    title.textContent=new Date(p.through*1000).toLocaleString(undefined,{timeZone:'UTC',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})+' UTC';tip.append(title);
+    title.textContent=new Date(p.through*1000).toLocaleString(undefined,{timeZone:'UTC',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false})+' UTC';if(this.kind==='flow')title.textContent=new Date(p.from*1000).toLocaleString(undefined,{timeZone:'UTC',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false})+' – '+new Date(p.through*1000).toLocaleString(undefined,{timeZone:'UTC',hour:'2-digit',minute:'2-digit',hour12:false})+' UTC';tip.append(title);
     const row=(label,value,series,total=false)=>{
       const line=document.createElement('div');line.className='tooltip-row'+(total?' tooltip-total':'');line.dataset.series=series;
       const key=document.createElement('span');key.className='tooltip-label';
@@ -127,7 +127,7 @@ class HolderChart {
   tooltip(){return this.canvas.parentElement.querySelector('.chart-hover');}
   tip(){
     if(!holderView||this.hover<0)return;const tip=this.tooltip();tip.replaceChildren();
-    const title=document.createElement('div');title.className='tooltip-title';const p=holderView.points[this.kind==='distribution'?holderCursor:this.hover];title.textContent=utc(p.time);tip.append(title);
+    const title=document.createElement('div');title.className='tooltip-title';const p=holderView.points[this.kind==='distribution'?holderCursor:this.hover];title.textContent=this.kind==='activity'&&this.hover>0?utc(holderView.points[this.hover-1].time)+' – '+utc(p.time):utc(p.time);tip.append(title);
     const row=(label,value,series)=>{const el=document.createElement('div');el.className='tooltip-row';el.dataset.series=series;const key=document.createElement('span');key.className='tooltip-label';const dot=document.createElement('i');dot.className='tooltip-dot';key.append(dot,document.createTextNode(label));const val=document.createElement('strong');val.className='tooltip-value';val.textContent=value;el.append(key,val);tip.append(el);};
     if(this.kind==='retention')p.retention.forEach((v,i)=>row(holderView.labels[i],v==null?'No baseline':full(v)+' (start 100)',holderColors[i]));
     if(this.kind==='activity'){row('Pool purchases',full(p.activity.buys)+' SKY','green');row('Pool sales',full(p.activity.sells)+' SKY','red');row('Exchange deposits',full(p.activity.exchangeDeposits)+' SKY','purple');}
