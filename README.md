@@ -86,3 +86,44 @@ The Refresh button additionally reads the latest Ethereum block for live price,
 reserves and execution quotes, without writing to Postgres. Charts, price change,
 trading flows and buybacks remain based on saved intervals. Live values show their
 own block timestamp and revert to saved values on the next ordinary refresh.
+
+### Holder history
+
+The existing ten-minute collector also advances a resumable SKY holder index,
+with its own advisory lock and a five-minute work budget. The first run scans
+from SKY deployment (block 20,663,735); subsequent runs resume atomic checkpoints.
+Views appear only after raw SKY balances reconcile to total supply and attributed
+Lockstake positions reconcile to lsSKY supply. Pool collection runs first and
+has separate freshness/error reporting.
+
+Holder charts share the pool's exact confirmed snapshot blocks: ten-minute
+points for 24h/7d and UTC daily points for longer ranges. Available history is
+explicit. The initial top 100, next 900 and remaining addresses stay fixed for
+the selected window; new holders are reported separately. Retention measures
+aggregate token holdings, not cost basis or the percentage of original tokens
+never sold (selling and rebuying can produce the same balance).
+
+Lockstake receipt mint/burn events are credited to the owner recorded in `Open`.
+Chief deposit/withdrawal events and VoteDelegate stake events attribute governance
+holdings to the depositor; engine and delegate custody is excluded to avoid double
+counting. Contract identities are checked onchain against SKY. Known reserves,
+converters, the tracked pool, vesting, burn and selected exchange addresses are
+excluded in `src/holders.ts`; this is a conservative, incomplete label set, not
+entity clustering. Other pools, exchanges or custody can remain unclassified.
+
+Activity covers the fixed top 100. A confirmed trade requires a direct SKY
+transfer to/from the monitored pool and a same-transaction directional Swap;
+transactions with both buy and sell swaps are left unclassified. This does not
+cover every DEX, router or exchange. Exchange deposits indicate possible selling,
+not executed sales. Addresses and smaller balances cannot establish retail identity.
+
+`GET /api/holders?range=24h` serves stored aggregate views; it does not rescan the
+chain in a request. Holder indexing failures leave prior views visible with an
+explicit timestamp and error. Genesis replay is covered by a Postgres integration
+test, including refusal to publish an unreconciled ledger and checkpoint reuse.
+Pool-transfer totals must also reconcile exactly to Swap SKY input/output totals
+within the transaction; mixed liquidity operations and donations are unclassified.
+Before publishing, each tracked nonzero address is checked with historical
+`SKY.balanceOf` on initial catch-up; later runs check all changed addresses,
+including those reduced to zero. Supply totals alone cannot detect a missing
+ordinary transfer, so this provides a separate per-address reconciliation.

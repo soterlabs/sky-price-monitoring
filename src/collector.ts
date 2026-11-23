@@ -2,6 +2,7 @@ import {config} from './config.js';
 import {Store} from './store.js';
 import {Rpc} from './rpc.js';
 import {makePoints} from './math.js';
+import {collectHolders} from './holders.js';
 import {safeError} from './errors.js';
 export async function collect(store:Store,rpc:Rpc,backfillDays:number,confirmations:number) {
   return store.lock('collect',async()=> {
@@ -44,7 +45,7 @@ export async function collect(store:Store,rpc:Rpc,backfillDays:number,confirmati
 }
 async function main() {
   const c=config(),store=new Store(c.databaseUrl);
-  try {const acquired=await collect(store,new Rpc(c.rpcUrl),c.backfillDays,c.confirmations);if(!acquired)console.log(JSON.stringify({event:'collector_already_running'}));}
+  try {const acquired=await collect(store,new Rpc(c.rpcUrl),c.backfillDays,c.confirmations);if(!acquired)console.log(JSON.stringify({event:'collector_already_running'}));else await collectHolders(store,new Rpc(c.rpcUrl));}
   finally {await store.close();}
 }
 if(import.meta.url===`file://${process.argv[1]}`)main().catch(e=>{console.error(JSON.stringify({event:'collector_failed',error:safeError(e)}));process.exitCode=1;});

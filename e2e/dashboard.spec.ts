@@ -1,17 +1,20 @@
 import {test,expect}from'@playwright/test';
 import{readFileSync}from'node:fs';import{gunzipSync}from'node:zlib';
+import {holderSeries,initialState,applyEvent,type HolderEvent,ZERO} from '../src/holders.js';
 import{makePoints,summarize,displayPoint,depth}from'../src/math.js';
 const f=JSON.parse(gunzipSync(readFileSync(new URL('../test/fixtures/study-24h.json.gz',import.meta.url))).toString());
 const points=makePoints(f.snapshots,f.events),latest=f.snapshots.at(-1);
+function holders(){const state=initialState(),a='0x'+'1'.repeat(40),b='0x'+'2'.repeat(40);applyEvent(state,{block:0,index:0,tx:'mint',kind:'liquid',from:ZERO,to:a,raw:String(1000000n*10n**18n)});const e:HolderEvent={block:Number(f.snapshots[2].block),index:0,tx:'move',kind:'liquid',from:a,to:b,raw:String(100000n*10n**18n)};applyEvent(state,e);return {data:{...holderSeries(state,[e],f.snapshots,[]),complete:true},job:null};}
 function data(range:string){return{range,asOf:new Date(latest.time*1000).toISOString(),fresh:true,collecting:false,jobs:[],latest:{price:Number(latest.usdsRaw)/Number(latest.skyRaw),...depth(latest)},summary:summarize(points),points:points.map(displayPoint),coverage:{complete:range==='24h',actualFrom:points[0]!.from,provisionalToday:range!=='24h'&&range!=='7d'},trades:[{tx:f.events.find((e:any)=>e.kind==='swap').tx,time:points.at(-1)!.through,side:'buy',buyback:true,usds:5448.6,sky:120000}]};}
 for(const viewport of [{width:390,height:844},{width:1440,height:1000}]){
   test(`charts, ranges, theme and links at ${viewport.width}px`,async({page})=>{
     await page.setViewportSize(viewport);const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
     await page.route('**/api/dashboard?*',route=>route.fulfill({json:data(new URL(route.request().url()).searchParams.get('range')!)}));
+    await page.route('**/api/holders?*',route=>route.fulfill({json:holders()}));
     await page.goto('/');await expect(page.locator('#spot')).toHaveText('0.04153');await expect(page.locator('#buyback')).toHaveText('751.91K');
     await expect(page.getByRole('link',{name:'PSM monitor'})).toHaveCount(0);
     await expect(page.getByText('How this monitor works',{exact:true})).toHaveCount(0);
-    await expect(page.locator('#period')).toHaveValue('24h');await expect(page.locator('canvas')).toHaveCount(4);
+    await expect(page.locator('#period')).toHaveValue('24h');await expect(page.locator('canvas')).toHaveCount(7);
     expect(await page.locator('body').evaluate(el=>el.scrollWidth)).toBeLessThanOrEqual(viewport.width);
     for(const p of ['7d','30d','90d','180d','24h']){await page.selectOption('#period',p);await expect(page.locator('[data-period-label]').first()).toHaveText(p==='24h'?'Last 24h':p.replace('d',' days'));}
     const theme=await page.locator('html').getAttribute('data-theme');await page.click('#theme');await expect(page.locator('html')).toHaveAttribute('data-theme',theme==='dark'?'light':'dark');await page.reload();await expect(page.locator('html')).toHaveAttribute('data-theme',theme==='dark'?'light':'dark');
@@ -29,6 +32,10 @@ for(const viewport of [{width:390,height:844},{width:1440,height:1000}]){
     await tooltip.screenshot({path:`test-results/flow-tooltip-${viewport.width}.png`});
     await page.locator('.recent summary').click();await expect(page.locator('#trades a')).toHaveAttribute('href',/^https:\/\/etherscan.io\/tx\/0x/);
     await page.locator('#price-chart').focus();await page.keyboard.press('ArrowLeft');await expect(page.locator('#price-chart + .chart-hover')).toBeVisible();
+    await expect(page.locator('#holder-count')).toHaveText('2');await expect(page.locator('#holder-change')).toHaveText('−10%');
+    await page.locator('#holder-date').fill('0');await expect(page.locator('#holder-count')).toHaveText('1');await page.selectOption('#distribution-mode','counts');
+    await page.locator('#retention-chart').focus();await page.keyboard.press('ArrowLeft');await expect(page.locator('#retention-chart + .chart-hover')).toBeVisible();
+    await page.locator('.holder-details summary').click();await expect(page.locator('#holder-addresses a').first()).toHaveText('0x'+'1'.repeat(40));await expect(page.locator('#holder-addresses a').first()).toHaveAttribute('href','https://etherscan.io/address/0x'+'1'.repeat(40));
     expect(errors).toEqual([]);await page.screenshot({path:`test-results/dashboard-${viewport.width}.png`,fullPage:true});
   });
 }

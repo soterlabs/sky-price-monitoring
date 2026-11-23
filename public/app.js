@@ -11,7 +11,7 @@ let current=null,controller=null,sequence=0,timer=null;
 const charts=[];
 function set(id,text){$(id).textContent=text;}
 function direction(el,n){el.classList.remove('positive','negative');if(n!==0)el.classList.add(n>0?'positive':'negative');}
-function theme(next){document.documentElement.dataset.theme=next;try{localStorage.setItem('sky-monitor-theme',next);}catch{}$('theme').setAttribute('aria-label',next==='dark'?'Switch to light theme':'Switch to dark theme');charts.forEach(c=>c.draw());}
+function theme(next){document.documentElement.dataset.theme=next;try{localStorage.setItem('sky-monitor-theme',next);}catch{}$('theme').setAttribute('aria-label',next==='dark'?'Switch to light theme':'Switch to dark theme');charts.forEach(c=>c.draw());if(typeof holderCharts!=='undefined')holderCharts.forEach(c=>c.draw());}
 $('theme').addEventListener('click',()=>theme(document.documentElement.dataset.theme==='dark'?'light':'dark'));
 let saved;try{saved=localStorage.getItem('sky-monitor-theme');}catch{}
 document.documentElement.dataset.theme=['light','dark'].includes(saved)?saved:(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
@@ -83,7 +83,7 @@ function render(d){
   $('live-status').hidden=true;document.querySelectorAll('.live-label').forEach(el=>el.textContent='SAVED');
   current=d;const range=$('period').value;document.querySelectorAll('[data-period-label]').forEach(el=>el.textContent=periodNames[range]);
   $('status').className='status-banner '+(d.fresh?'fresh':d.collecting?'':'stale');set('status-title',d.fresh?'Onchain data up to date':d.collecting?'Collecting onchain history':'Showing the latest saved data');set('updated',d.asOf?'As of '+new Date(d.asOf).toLocaleString(undefined,{timeZone:'UTC',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false})+' UTC':'Data refreshes every 10 minutes');
-  const jobIssue=d.jobs?.find(j=>j.error),coverage=$('coverage'),notes=[];
+  const jobIssue=d.jobs?.find(j=>j.error&&j.name!=='holders'),coverage=$('coverage'),notes=[];
   if(d.coverage&&!d.coverage.complete)notes.push('Available history starts '+new Date(d.coverage.actualFrom*1000).toLocaleString(undefined,{timeZone:'UTC',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})+' UTC. Figures cover the available portion of this range.');
   if(d.coverage?.provisionalToday)notes.push('Today’s daily point is provisional.');
   if(jobIssue)notes.push('Latest '+(jobIssue.name==='collector'?'collection':'daily rollup')+' issue: '+jobIssue.error);
@@ -96,7 +96,7 @@ function render(d){
 async function load(live=false){
   const seq=++sequence;controller?.abort();const requestController=new AbortController();controller=requestController;clearTimeout(timer);$('refresh').disabled=true;
   const timeout=setTimeout(()=>requestController.abort(),25000);
-  try{const r=await fetch('/api/dashboard?range='+encodeURIComponent($('period').value),{cache:'no-store',signal:requestController.signal});if(!r.ok)throw new Error('The data service is temporarily unavailable.');const d=await r.json();if(seq!==sequence)return;render(d);timer=setTimeout(load,d.collecting?30000:600000);
+  try{const r=await fetch('/api/dashboard?range='+encodeURIComponent($('period').value),{cache:'no-store',signal:requestController.signal});if(!r.ok)throw new Error('The data service is temporarily unavailable.');const d=await r.json();if(seq!==sequence)return;render(d);void loadHolders(seq,requestController.signal);timer=setTimeout(load,d.collecting?30000:600000);
     if(live){
       try{const response=await fetch('/api/live',{cache:'no-store',signal:requestController.signal});if(!response.ok)throw new Error('Live read failed');const result=await response.json();if(seq!==sequence)return;
         if(d.latest&&Number(result.block)<Number(d.latest.block))throw new Error('RPC behind saved data');
@@ -108,4 +108,61 @@ async function load(live=false){
   catch(e){if(seq!==sequence)return;$('status').className='status-banner stale';set('status-title','Unable to refresh · retrying shortly');set('updated',current?.asOf?'Saved data as of '+new Date(current.asOf).toLocaleString():'Waiting for the data service');timer=setTimeout(load,30000);}
   finally{clearTimeout(timeout);if(seq===sequence)$('refresh').disabled=false;}
 }
-$('period').addEventListener('change',()=>{clearPeriod();if(current)current={...current,summary:null,points:[]};charts.forEach(c=>{c.hover=-1;c.tooltip().hidden=true;c.draw();});load();});$('refresh').addEventListener('click',()=>load(true));document.addEventListener('visibilitychange',()=>{if(!document.hidden)load();});load();
+$('period').addEventListener('change',()=>{renderHolders({data:null});clearPeriod();if(current)current={...current,summary:null,points:[]};charts.forEach(c=>{c.hover=-1;c.tooltip().hidden=true;c.draw();});load();});$('refresh').addEventListener('click',()=>load(true));document.addEventListener('visibilitychange',()=>{if(!document.hidden)load();});load();
+
+// Holder history is independently indexed and can be behind pool collection.
+let holderView=null,holderCursor=0;
+const holderColors=['blue','purple','green'];
+const utc=t=>new Date(t*1000).toLocaleString(undefined,{timeZone:'UTC',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false})+' UTC';
+function holderFacts(){
+  const d=holderView,last=d?.points.at(-1),p=d?.points[holderCursor];if(!p||!last)return;
+  set('holder-change',last.retention[0]==null?'—':signed(last.retention[0]-100)+'%');
+  set('holder-net',signed(d.addresses.reduce((s,a)=>s+a.change,0))+' SKY');
+  set('holder-new',compact(last.newcomerSky)+' SKY');set('holder-baseline',utc(d.from));
+  set('holder-date-label',utc(p.time));set('holder-count',full(p.distribution.holders));set('holder-top10',pct(p.distribution.top10));set('holder-top100',pct(p.distribution.top100));set('holder-supply',compact(p.distribution.total)+' SKY');
+  for(const [id,key]of [['whale-buys','buys'],['whale-sells','sells'],['whale-exchanges','exchangeDeposits'],['whale-other','otherOut']])set(id,compact(d.activity[key])+' SKY');
+}
+class HolderChart {
+  constructor(id,kind){this.canvas=$(id);this.kind=kind;this.hover=-1;this.plot=null;new ResizeObserver(()=>this.draw()).observe(this.canvas.parentElement);this.canvas.addEventListener('pointermove',e=>{if(!this.plot||!holderView)return;const r=this.canvas.getBoundingClientRect();if(kind==='distribution')this.hover=Math.max(0,Math.min(5,Math.floor((e.clientY-r.top-16)/((r.height-50)/6))));else{const {left,width,start,duration}=this.plot,t=start+(e.clientX-r.left-left)/width*duration;let nearest=0;holderView.points.forEach((p,i)=>{if(Math.abs(p.time-t)<Math.abs(holderView.points[nearest].time-t))nearest=i;});this.hover=nearest;}this.draw();this.tip();});this.canvas.addEventListener('pointerleave',()=>{this.hover=-1;this.tooltip().hidden=true;this.draw();});this.canvas.addEventListener('keydown',e=>{if(!holderView||!['ArrowLeft','ArrowRight'].includes(e.key))return;e.preventDefault();const max=kind==='distribution'?5:holderView.points.length-1;this.hover=Math.max(0,Math.min(max,(this.hover<0?max:this.hover)+(e.key==='ArrowLeft'?-1:1)));this.draw();this.tip();});}
+  tooltip(){return this.canvas.parentElement.querySelector('.chart-hover');}
+  tip(){
+    if(!holderView||this.hover<0)return;const tip=this.tooltip();tip.replaceChildren();
+    const title=document.createElement('div');title.className='tooltip-title';const p=holderView.points[this.kind==='distribution'?holderCursor:this.hover];title.textContent=utc(p.time);tip.append(title);
+    const row=(label,value,series)=>{const el=document.createElement('div');el.className='tooltip-row';el.dataset.series=series;const key=document.createElement('span');key.className='tooltip-label';const dot=document.createElement('i');dot.className='tooltip-dot';key.append(dot,document.createTextNode(label));const val=document.createElement('strong');val.className='tooltip-value';val.textContent=value;el.append(key,val);tip.append(el);};
+    if(this.kind==='retention')p.retention.forEach((v,i)=>row(holderView.labels[i],v==null?'No baseline':full(v)+' (start 100)',holderColors[i]));
+    if(this.kind==='activity'){row('Pool purchases',full(p.activity.buys)+' SKY','green');row('Pool sales',full(p.activity.sells)+' SKY','red');row('Exchange deposits',full(p.activity.exchangeDeposits)+' SKY','purple');}
+    if(this.kind==='distribution'){const i=this.hover;row(holderView.buckets[i]+' SKY',pct(p.distribution.shares[i]),'blue');row('Addresses',full(p.distribution.counts[i]),'ink');row('Starting share',pct(holderView.points[0].distribution.shares[i]),'ink');}
+    tip.hidden=false;tip.style.left='8px';tip.style.top='8px';
+  }
+  draw(){
+    const canvas=this.canvas,ctx=canvas.getContext('2d'),r=canvas.getBoundingClientRect(),w=r.width,h=r.height;if(!w||!h)return;const dpr=devicePixelRatio||1;canvas.width=w*dpr;canvas.height=h*dpr;ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
+    const points=holderView?.points??[],empty=canvas.parentElement.querySelector('.chart-empty');empty.hidden=points.length>0;if(!points.length){this.tooltip().hidden=true;this.plot=null;return;}
+    ctx.font='12px system-ui';ctx.fillStyle=color('muted');ctx.textBaseline='middle';
+    if(this.kind==='distribution'){
+      const mode=$('distribution-mode').value,now=points[holderCursor].distribution[mode],base=points[0].distribution[mode],a=axis(0,Math.max(...now,...base),true),left=94,width=w-left-14,row=(h-50)/6;
+      for(let i=0;i<6;i++){const y=16+i*row;ctx.fillStyle=color('muted');ctx.fillText(holderView.buckets[i],0,y+row/2);ctx.fillStyle=color('blue');ctx.globalAlpha=.2;ctx.fillRect(left,y+6,base[i]/a.hi*width,row-12);ctx.globalAlpha=1;ctx.fillRect(left,y+row*.35,now[i]/a.hi*width,row*.3);ctx.strokeStyle=color('muted');ctx.strokeRect(left,y+6,base[i]/a.hi*width,row-12);}
+      a.ticks.filter(v=>mode==='shares'||Number.isInteger(v)).forEach(v=>{const label=mode==='shares'?compact(v)+'%':compact(v);ctx.fillStyle=color('muted');ctx.fillText(label,Math.min(w-ctx.measureText(label).width,Math.max(left,left+v/a.hi*width-ctx.measureText(label).width/2)),h-15);});this.plot={left,width};return;
+    }
+    const left=58,right=12,top=16,bottom=35,width=w-left-right,height=h-top-bottom,start=points[0].time,duration=Math.max(1,points.at(-1).time-start);
+    const values=this.kind==='retention'?[100,...points.flatMap(p=>p.retention.filter(v=>v!=null))]:points.flatMap(p=>[p.activity.buys,-p.activity.sells-p.activity.exchangeDeposits]);const min=this.kind==='retention'?Math.min(99,...values):Math.min(-1,...values),max=this.kind==='retention'?Math.max(101,...values):Math.max(1,...values);const a=axis(min,max,this.kind==='activity');
+    const x=t=>left+(t-start)/duration*width,y=v=>top+(a.hi-v)/(a.hi-a.lo)*height;
+    for(const v of a.ticks){const py=y(v);ctx.strokeStyle=color('grid');ctx.beginPath();ctx.moveTo(left,py);ctx.lineTo(w-right,py);ctx.stroke();ctx.fillStyle=color('muted');ctx.fillText(compact(v),0,py);}
+    if(this.kind==='retention'){
+      ctx.strokeStyle=color('muted');ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(left,y(100));ctx.lineTo(w-right,y(100));ctx.stroke();ctx.setLineDash([]);
+      for(let group=0;group<3;group++){ctx.strokeStyle=color(holderColors[group]);ctx.lineWidth=2;ctx.beginPath();let started=false;for(const p of points){const v=p.retention[group];if(v==null){started=false;continue;}if(!started)ctx.moveTo(x(p.time),y(v));else ctx.lineTo(x(p.time),y(v));started=true;}ctx.stroke();}ctx.lineWidth=1;
+    }else for(let i=1;i<points.length;i++){const p=points[i],v=p.activity,bw=Math.max(1,Math.min(40,(p.time-points[i-1].time)/duration*width*.75)),px=x((p.time+points[i-1].time)/2)-bw/2;ctx.fillStyle=color('green');ctx.fillRect(px,y(v.buys),bw,y(0)-y(v.buys));ctx.fillStyle=color('red');ctx.fillRect(px,y(0),bw,y(-v.sells)-y(0));ctx.fillStyle=color('purple');ctx.fillRect(px,y(-v.sells),bw,y(-v.sells-v.exchangeDeposits)-y(-v.sells));}
+    ctx.fillStyle=color('muted');ctx.textBaseline='alphabetic';[start,start+duration/2,start+duration].forEach((t,i)=>{const label=new Date(t*1000).toLocaleString(undefined,duration<=86400?{timeZone:'UTC',hour:'2-digit',minute:'2-digit',hour12:false}:{timeZone:'UTC',month:'short',day:'numeric'}),tw=ctx.measureText(label).width;ctx.fillText(label,i===0?left:i===2?w-right-tw:x(t)-tw/2,h-8);});
+    this.plot={left,width,start,duration};if(this.hover>=0){ctx.strokeStyle=color('muted');ctx.setLineDash([3,3]);ctx.beginPath();ctx.moveTo(x(points[this.hover].time),top);ctx.lineTo(x(points[this.hover].time),h-bottom);ctx.stroke();ctx.setLineDash([]);}
+  }
+}
+const holderCharts=[new HolderChart('retention-chart','retention'),new HolderChart('distribution-chart','distribution'),new HolderChart('holder-activity-chart','activity')];
+function renderHolders(payload){
+  holderView=payload.data;holderCursor=Math.max(0,(holderView?.points.length??1)-1);const slider=$('holder-date');slider.max=String(holderCursor);slider.value=String(holderCursor);slider.disabled=!holderView;
+  const notes=[];if(!holderView)notes.push('Indexing holder history from SKY deployment'+(payload.progress?' · '+pct(payload.progress.percent,1)+' of blocks scanned':'')+'. Holder figures will appear after supply reconciliation.');else{notes.push('Holder data as of '+utc(holderView.through)+'.');if(!holderView.complete)notes.push('The selected range has partial history, starting '+utc(holderView.from)+'.');if(Date.now()-holderView.through*1000>25*60000)notes.push('Holder data is behind the latest collection.');}if(payload.job?.error)notes.push('Latest holder index issue: '+payload.job.error);set('holder-status',notes.join(' '));
+  const tbody=$('holder-addresses');tbody.replaceChildren();if(holderView){holderFacts();for(const r of holderView.addresses){const tr=document.createElement('tr'),td=document.createElement('td'),a=document.createElement('a');a.href='https://etherscan.io/address/'+r.address;a.target='_blank';a.rel='noopener';a.textContent=r.address;td.append(a);tr.append(td);for(const n of [r.start,r.end,r.change]){const cell=document.createElement('td');cell.textContent=compact(n);tr.append(cell);}tbody.append(tr);}}
+  else{for(const id of ['holder-change','holder-net','holder-new','holder-baseline','holder-count','holder-top10','holder-top100','holder-supply','whale-buys','whale-sells','whale-exchanges','whale-other'])set(id,'—');set('holder-date-label','—');}
+  holderCharts.forEach(c=>{c.hover=-1;c.tooltip().hidden=true;c.draw();});
+}
+async function loadHolders(seq,signal){try{const response=await fetch('/api/holders?range='+encodeURIComponent($('period').value),{cache:'no-store',signal:AbortSignal.any([signal,AbortSignal.timeout(20000)])});if(!response.ok)throw new Error('Unavailable');const payload=await response.json();if(seq===sequence)renderHolders(payload);}catch{if(seq===sequence){renderHolders({data:null});set('holder-status','Holder history temporarily unavailable. Pool data is unaffected.');}}}
+$('holder-date').addEventListener('input',()=>{holderCursor=Number($('holder-date').value);holderFacts();holderCharts.forEach(c=>{c.hover=-1;c.tooltip().hidden=true;c.draw();});});
+$('distribution-mode').addEventListener('change',()=>holderCharts[1].draw());

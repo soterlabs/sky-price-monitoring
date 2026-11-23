@@ -6,6 +6,7 @@ import {Store} from './store.js';
 import {dashboardData} from './view.js';
 import {Rpc} from './rpc.js';
 import {depth,spot} from './math.js';
+import {holderData} from './holders.js';
 import {safeError} from './errors.js';
 const c=config(),store=new Store(c.databaseUrl);
 const root=new URL('../public/',import.meta.url);
@@ -31,6 +32,10 @@ const server=createServer((req,res)=>{void(async()=>{
   if(req.method!=='GET'&&req.method!=='HEAD'){send(res,405,'application/json',JSON.stringify({error:'Method not allowed'}));return;}
   if(url.pathname==='/healthz'){await store.ping();send(res,200,'application/json',JSON.stringify({ok:true}));return;}
   if(url.pathname==='/api/live'){send(res,200,'application/json',JSON.stringify(await live()));return;}
+  if(url.pathname==='/api/holders'){
+    let p:Period;try{p=period(url.searchParams.get('range')??c.defaultPeriod);}catch{send(res,400,'application/json',JSON.stringify({error:'Invalid period'}));return;}
+    send(res,200,'application/json',JSON.stringify(await holderData(store,p)));return;
+  }
   if(url.pathname==='/api/dashboard'){
     let p:Period;try{p=period(url.searchParams.get('range')??c.defaultPeriod);}catch{send(res,400,'application/json',JSON.stringify({error:'Invalid period'}));return;}
     send(res,200,'application/json',JSON.stringify(await data(p)));return;
