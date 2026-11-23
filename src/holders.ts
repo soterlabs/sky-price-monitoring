@@ -88,10 +88,14 @@ export function holderSeries(state:HolderState,events:HolderEvent[],snapshots:Sn
   const final=balances(work),addresses=ranked.slice(0,100).map(([address,v])=>({address,start:units(String(v)),end:units(String(final.get(address)??0n)),change:units(String((final.get(address)??0n)-v))})).sort((a,b)=>a.change-b.change);
   return {from:start.time,through:end.time,labels:['Initial top 100','Initial 101–1,000','Initial remaining holders'],buckets:bucketLabels,points,addresses,initialSky:initial.map(v=>units(String(v))),activity:points.reduce((s,p)=>({buys:s.buys+p.activity.buys,sells:s.sells+p.activity.sells,exchangeDeposits:s.exchangeDeposits+p.activity.exchangeDeposits,otherOut:s.otherOut+p.activity.otherOut}),{buys:0,sells:0,exchangeDeposits:0,otherOut:0})};
 }
-async function schema(store:Store){await store.initialize();await store.pool.query(`CREATE TABLE IF NOT EXISTS sky_holder_checkpoints(block bigint PRIMARY KEY,hash text NOT NULL,payload jsonb NOT NULL);
+const initialized=new WeakMap<Store,Promise<void>>();
+async function schema(store:Store){
+ let ready=initialized.get(store);if(!ready){ready=(async()=>{await store.initialize();const c=await store.pool.connect();try{await c.query('BEGIN');await c.query('SELECT pg_advisory_xact_lock(734902,3)');await c.query(`CREATE TABLE IF NOT EXISTS sky_holder_checkpoints(block bigint PRIMARY KEY,hash text NOT NULL,payload jsonb NOT NULL);
  CREATE TABLE IF NOT EXISTS sky_holder_events(block bigint NOT NULL,log_index integer NOT NULL,tx text NOT NULL,payload jsonb NOT NULL,PRIMARY KEY(tx,log_index));
  CREATE INDEX IF NOT EXISTS sky_holder_events_block ON sky_holder_events(block);
- CREATE TABLE IF NOT EXISTS sky_holder_views(period text PRIMARY KEY,payload jsonb NOT NULL);`);}
+ CREATE TABLE IF NOT EXISTS sky_holder_views(period text PRIMARY KEY,payload jsonb NOT NULL);`);await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}})().catch(e=>{initialized.delete(store);throw e;});initialized.set(store,ready);}await ready;
+}
+async function rewind(store:Store,block:number){const c=await store.pool.connect();try{await c.query('BEGIN');await c.query('DELETE FROM sky_holder_checkpoints WHERE block > $1',[block]);await c.query('DELETE FROM sky_holder_events WHERE block > $1',[block]);await c.query('DELETE FROM sky_holder_views');await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}}
 async function checkpoint(store:Store,state:HolderState,events:HolderEvent[]){const c=await store.pool.connect();try{await c.query('BEGIN');if(events.length)await c.query(`INSERT INTO sky_holder_events(block,log_index,tx,payload) SELECT (v->>'block')::bigint,(v->>'index')::integer,v->>'tx',v FROM jsonb_array_elements($1::jsonb) v ON CONFLICT(tx,log_index) DO UPDATE SET block=EXCLUDED.block,payload=EXCLUDED.payload`,[JSON.stringify(events)]);await c.query('INSERT INTO sky_holder_checkpoints(block,hash,payload) VALUES($1,$2,$3) ON CONFLICT(block) DO UPDATE SET hash=EXCLUDED.hash,payload=EXCLUDED.payload',[state.block,state.hash,JSON.stringify(state)]);await c.query('DELETE FROM sky_holder_checkpoints WHERE block < (SELECT block FROM sky_holder_checkpoints ORDER BY block DESC OFFSET 12 LIMIT 1)');await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}}
 async function readWord(rpc:Rpc,to:string,sig:string,block:number,args=''){return (await rpc.batch([{method:'eth_call',params:[{to,data:selector(sig)+args},toHex(block)]}]))[0] as string;}
 export async function collectHolders(store:Store,rpc:Rpc,budgetMs=300000){
@@ -107,7 +111,7 @@ export async function collectHolders(store:Store,rpc:Rpc,budgetMs=300000){
   const saved=(await store.pool.query<{payload:HolderState}>('SELECT payload FROM sky_holder_checkpoints ORDER BY block DESC')).rows;
   let state=initialState();for(const row of saved){if(row.payload.block<=target&&(await rpc.block(BigInt(row.payload.block))).hash===row.payload.hash){state=row.payload;break;}}
   if(saved.length&&state.block<START)throw new Error('No canonical holder checkpoint; rebuild required');
-  if(saved[0]&&saved[0].payload.block!==state.block){await store.pool.query('DELETE FROM sky_holder_checkpoints WHERE block > $1',[state.block]);await store.pool.query('DELETE FROM sky_holder_events WHERE block > $1',[state.block]);await store.pool.query('DELETE FROM sky_holder_views');}
+  if(saved[0]&&saved[0].payload.block!==state.block)await rewind(store,state.block);
   while(state.block<target&&Date.now()-started<budgetMs){
     const from=state.block+1,to=Math.min(from+(from<25000000?99999:19999),target);
     const logs=await rpc.logs(BigInt(from),BigInt(to),[SKY,LSSKY,ENGINE,CHIEF,DELEGATE_FACTORY],Object.values(t),10000n);
