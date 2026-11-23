@@ -1,6 +1,8 @@
 # SKY price monitoring
 
-A minimal public dashboard for the Ethereum [SKY/USDS Uniswap V2 pool](https://etherscan.io/address/0x2621cc0b3f3c079c1db0e80794aa24976f0b9e3c), built in the style of [Soter Labs' PSM monitor](https://psm.soterlabs.com).
+A minimal public dashboard for the Ethereum [SKY/USDS Uniswap V2 pool](https://etherscan.io/address/0x2621cc0b3f3c079c1db0e80794aa24976f0b9e3c), built by Soter Labs.
+
+[Live dashboard](https://sky.soterlabs.com)
 
 Four cards show price and true oracle TWAP, buy/sell USDS flows, verified protocol buybacks, and pool liquidity with execution quotes. Volume, drawdown, volatility and recent swaps provide context. Prices are **USDS per SKY**, not an independently verified USD quote. Light/dark themes and mobile layouts are supported.
 

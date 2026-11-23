@@ -1,15 +1,18 @@
 import {createServer,type ServerResponse} from 'node:http';
 import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {config,period,type Period} from './config.js';
 import {Store} from './store.js';
 import {dashboardData} from './view.js';
 import {safeError} from './errors.js';
 const c=config(),store=new Store(c.databaseUrl);
 const root=new URL('../public/',import.meta.url);
+const appJs=readFileSync(new URL('app.js',root)),stylesCss=readFileSync(new URL('styles.css',root));
+const assetVersion=createHash('sha256').update(appJs).update(stylesCss).digest('hex').slice(0,12);
 const files=new Map([
-  ['/',{type:'text/html; charset=utf-8',body:readFileSync(new URL('index.html',root),'utf8').replace('{{DEFAULT_PERIOD}}',c.defaultPeriod)}],
-  ['/app.js',{type:'text/javascript; charset=utf-8',body:readFileSync(new URL('app.js',root))}],
-  ['/styles.css',{type:'text/css; charset=utf-8',body:readFileSync(new URL('styles.css',root))}],
+  ['/',{type:'text/html; charset=utf-8',body:readFileSync(new URL('index.html',root),'utf8').replace('{{DEFAULT_PERIOD}}',c.defaultPeriod).replace('/app.js',`/app.js?v=${assetVersion}`).replace('/styles.css',`/styles.css?v=${assetVersion}`)}],
+  ['/app.js',{type:'text/javascript; charset=utf-8',body:appJs}],
+  ['/styles.css',{type:'text/css; charset=utf-8',body:stylesCss}],
   ['/favicon.svg',{type:'image/svg+xml',body:readFileSync(new URL('favicon.svg',root))}],
   ['/soter-labs.png',{type:'image/png',body:readFileSync(new URL('soter-labs.png',root))}],
   ['/deltha.otf',{type:'font/otf',body:readFileSync(new URL('deltha.otf',root))}],

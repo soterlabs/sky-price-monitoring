@@ -28,7 +28,29 @@ class Chart {
   constructor(id,kind){this.canvas=$(id);this.kind=kind;this.ctx=this.canvas.getContext('2d');this.hover=-1;this.plot=null;this.observer=new ResizeObserver(()=>this.draw());this.observer.observe(this.canvas.parentElement);this.canvas.addEventListener('pointermove',e=>this.pointer(e));this.canvas.addEventListener('pointerleave',()=>{this.hover=-1;this.tooltip().hidden=true;this.draw();});this.canvas.addEventListener('keydown',e=>{if(!['ArrowLeft','ArrowRight'].includes(e.key)||!current?.points.length)return;e.preventDefault();this.hover=Math.max(0,Math.min(current.points.length-1,(this.hover<0?current.points.length-1:this.hover)+(e.key==='ArrowLeft'?-1:1)));this.draw();this.showTooltip();});charts.push(this);}
   tooltip(){return this.canvas.parentElement.querySelector('.chart-hover');}
   pointer(e){if(!this.plot||!current?.points.length)return;const rect=this.canvas.getBoundingClientRect(),x=e.clientX-rect.left,{left,width,start,duration}=this.plot;const t=start+(x-left)/width*duration;let i=0;current.points.forEach((p,j)=>{if(Math.abs(p.through-t)<Math.abs(current.points[i].through-t))i=j;});this.hover=i;this.draw();this.showTooltip();}
-  showTooltip(){if(this.hover<0||!this.plot)return;const p=current.points[this.hover],tip=this.tooltip();let text=new Date(p.through*1000).toLocaleString(undefined,{timeZone:'UTC',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})+' UTC';if(this.kind==='price')text+='\nSpot: '+price(p.close)+' USDS / SKY\nInterval TWAP: '+price(p.twap);if(this.kind==='flow')text+='\nProtocol buys: '+full(p.buybackUsds)+' USDS\nOther buys: '+full(p.otherBuyUsds)+' USDS\nSells: '+full(p.sellUsds)+' USDS\nNet buying: '+signed(p.netBuyUsds)+' USDS';if(this.kind==='buyback'){const s=this.cumulative[this.hover];text+='\nProtocol: '+signed(s.buybacks)+' USDS\nOther net: '+signed(s.other)+' USDS\nCombined: '+signed(s.net)+' USDS';}if(this.kind==='liquidity')text+='\nUSDS reserve: '+full(p.usds)+'\nSKY reserve: '+full(p.sky);tip.textContent=text;tip.hidden=false;const {left,width,start,duration}=this.plot;const x=left+(p.through-start)/duration*width;tip.style.left=Math.max(0,Math.min(this.canvas.clientWidth-tip.offsetWidth,x+10))+'px';tip.style.top='12px';}
+  showTooltip(){
+    if(this.hover<0||!this.plot)return;
+    const p=current.points[this.hover],tip=this.tooltip();tip.replaceChildren();
+    const title=document.createElement('div');title.className='tooltip-title';
+    title.textContent=new Date(p.through*1000).toLocaleString(undefined,{timeZone:'UTC',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})+' UTC';tip.append(title);
+    const row=(label,value,series,total=false)=>{
+      const line=document.createElement('div');line.className='tooltip-row'+(total?' tooltip-total':'');line.dataset.series=series;
+      const key=document.createElement('span');key.className='tooltip-label';
+      const dot=document.createElement('i');dot.className='tooltip-dot';dot.setAttribute('aria-hidden','true');
+      const text=document.createElement('span');text.textContent=label;key.append(dot,text);
+      const amount=document.createElement('strong');amount.className='tooltip-value';amount.textContent=value;
+      line.append(key,amount);tip.append(line);
+    };
+    if(this.kind==='price'){row('Spot',price(p.close)+' USDS','ink');row('Interval TWAP',price(p.twap)+' USDS','blue');}
+    if(this.kind==='flow'){
+      row('Protocol buys',full(p.buybackUsds)+' USDS','blue');row('Other buys',full(p.otherBuyUsds)+' USDS','green');
+      row('Sells',full(p.sellUsds)+' USDS','red');row('Net buying',signed(p.netBuyUsds)+' USDS','ink',true);
+    }
+    if(this.kind==='buyback'){const s=this.cumulative[this.hover];row('Protocol',signed(s.buybacks)+' USDS','blue');row('Other net',signed(s.other)+' USDS','red');row('Combined',signed(s.net)+' USDS','ink',true);}
+    if(this.kind==='liquidity'){row('USDS reserve',compact(p.usds)+' USDS','purple');row('SKY reserve',compact(p.sky)+' SKY','ink');}
+    tip.hidden=false;const {left,width,start,duration}=this.plot;const x=left+(p.through-start)/duration*width;
+    tip.style.left=Math.max(0,Math.min(this.canvas.clientWidth-tip.offsetWidth,x+10))+'px';tip.style.top='12px';
+  }
   draw(){
     const canvas=this.canvas,ctx=this.ctx,rect=canvas.getBoundingClientRect(),w=rect.width,h=rect.height;if(!w||!h)return;
     const dpr=window.devicePixelRatio||1;canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
