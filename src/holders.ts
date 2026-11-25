@@ -30,7 +30,7 @@ export const excludedLabels:Record<string,string>={...exchangeLabels,[ZERO]:'Min
   '0xbdcfca946b6cdd965f99a839e4435bcdc1bc470b':'Legacy MKR/SKY converter',
   '0x67eadb3288ccede034ce95b0511dcc65cf630bb6':'SKY vesting',
 };
-export const stusdsExcludedLabels:Record<string,string>={...exchangeLabels,[ZERO]:'Mint / burn','0x000000000000000000000000000000000000dead':'Burn address',[markets.stusds.pool]:'Curve USDS/stUSDS pool',[markets.stusds.token]:'stUSDS vault','0xbe8e3e3618f7474f8cb1d074a26affef007e98fb':'Sky treasury','0x36c2abab95f9aacd4b05d65b89890e29d6382611':'Curve LP gauge'};
+export const stusdsExcludedLabels:Record<string,string>={...exchangeLabels,[ZERO]:'Mint / burn','0x000000000000000000000000000000000000dead':'Burn address',[markets.stusds.pool]:'Curve USDS/stUSDS pool','0xb0cefac820228827a3f40deedbca88d5de44bca9':'Curve sUSDS/stUSDS pool',[markets.stusds.token]:'stUSDS vault','0xbe8e3e3618f7474f8cb1d074a26affef007e98fb':'Sky treasury','0x36c2abab95f9aacd4b05d65b89890e29d6382611':'Curve LP gauge'};
 export interface HolderOptions{pool?:string;excluded?:Record<string,string>;custody?:string[];redemptions?:{tx:string;owner:string;raw:string}[]}
 export interface HolderEvent {block:number;index:number;tx:string;kind:'liquid'|'position'|'vote'|'delegate';from:string;to:string;raw:string}
 export interface HolderState {block:number;hash:string;balances:Record<string,string>;positions:Record<string,string>;votes:Record<string,string>;owners:Record<string,string>;delegates:string[];complete:boolean;verifiedBalances?:boolean}

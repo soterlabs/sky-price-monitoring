@@ -15,3 +15,6 @@ test('stUSDS retention uses fixed share balances and distinguishes vault redempt
  const events=[{block:Number(end.block),index:0,tx:'redeem',kind:'liquid' as const,from:a,to:ZERO,raw:String(100n*WAD)},{block:Number(end.block),index:1,tx:'mint',kind:'liquid' as const,from:ZERO,to:b,raw:String(200n*WAD)}];events.forEach(e=>applyEvent(state,e));
  const out=holderSeries(state,events,[start,end],[],{pool,excluded:stusdsExcludedLabels,redemptions:[{tx:'redeem',owner:a,raw:String(100n*WAD)}]});assert.equal(out.points[1]!.retention[0],90);assert.equal(out.activity.sells,0);assert.equal(out.activity.redemptions,100);assert.equal(out.points[1]!.supplyShares,1100);assert.equal(out.points[1]!.newcomerSky,200);
 });
+
+
+test('both known Curve pools are custody exclusions for stUSDS cohorts',async()=>{const{balances,initialState,stusdsExcludedLabels}=await import('../src/holders.js');const state=initialState();state.balances[markets.stusds.pool]=String(WAD);state.balances['0xb0cefac820228827a3f40deedbca88d5de44bca9']=String(WAD);state.balances['0x'+'1'.repeat(40)]=String(WAD);assert.equal(balances(state,stusdsExcludedLabels).size,1);});
