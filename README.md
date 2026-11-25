@@ -1,8 +1,10 @@
-# SKY price monitoring
+# Token price monitoring
 
 A minimal public dashboard for the Ethereum [SKY/USDS Uniswap V2 pool](https://etherscan.io/address/0x2621cc0b3f3c079c1db0e80794aa24976f0b9e3c), built by Soter Labs.
 
-[Live dashboard](https://sky.soterlabs.com)
+[SKY dashboard](https://sky.soterlabs.com) · [stUSDS dashboard](https://stusds.soterlabs.com)
+
+One image serves two fixed market profiles. `MARKET_PROFILE=sky` is the default; `stusds` selects the Curve USDS/stUSDS pool and ERC4626 vault. SKY keeps its original public tables; stUSDS uses an isolated `stusds` PostgreSQL schema and separate locks and jobs.
 
 Four cards show price and true oracle TWAP, buy/sell USDS flows, verified protocol buybacks, and pool liquidity with execution quotes. Volume, drawdown, volatility and recent swaps provide context. Prices are **USDS per SKY**, not an independently verified USD quote. Light/dark themes and mobile layouts are supported.
 
@@ -51,6 +53,7 @@ node --env-file=.env dist/server.js
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `MARKET_PROFILE` | `sky` | `sky` or `stusds`; fixed per service |
 | `DATABASE_URL` | Required | PostgreSQL connection |
 | `ETH_RPC` | Required | Ethereum archive endpoint; kept out of source control |
 | `DASHBOARD_DEFAULT_PERIOD` | `24h` | One of `60m`, `24h`, `7d`, `30d`, `90d`, `180d` |
@@ -133,3 +136,51 @@ Older ten-minute history remains valid. Ten-minute views end on ten-minute UTC
 boundaries even when the newest five-minute checkpoint ends at :05. Holder views
 rewind the ledger to that range's exact end block. The Last 60min page polls every
 five minutes; other ranges keep their existing ten-minute polling.
+
+## stUSDS profile
+
+The second dashboard follows [Curve USDS/stUSDS](https://etherscan.io/address/0x2c7c98a3b1582d83c43987202aeff638312478ae)
+and the [stUSDS ERC4626 vault](https://etherscan.io/address/0x99cd4ec3f88a45940936f469e4bb72a2a701eeb9).
+It retains price, buy/sell flow, liquidity and all three holder cards. Vault
+**deposits and redemptions** replace SKY protocol buybacks. These are whole-vault
+ERC4626 flows, not Curve buys/sells. Recent swaps and vault events are separate.
+
+An additional card compares the same-block Curve market price with
+`previewRedeem(1e18)` in USDS/share. `convertToAssets(1e18)` is shown separately.
+Positive basis points mean a market premium; negative mean a discount. A preview
+is not executable liquidity: global unused redemption capacity is derived from
+accrued vault assets less accrued borrowing and outstanding liquidation debt,
+and checked against owner-specific `maxWithdraw` and `maxRedeem` views.
+
+Curve `get_p(0)` and its EMA are **rate normalized**. Both are multiplied by the
+stored stUSDS rate to obtain USDS/share. Curve averages are approximate trapezoid
+averages of five-minute observations, not Uniswap cumulative-oracle TWAPs.
+High/low and gap extrema are sampled. Price impact uses historical `get_dy`
+quotes with dynamic fees. For 10K/100K USDS market notionals, the sell quote and
+vault preview use identical share inputs. Quote reverts show unavailable values.
+Pool value is `USDS + stUSDS × market price`, not a V2 reserve shortcut.
+
+Every segment reconciles physical token transfers, LP supply and vault issuance.
+Mint/burn transfers must match Deposit/Withdraw events. Contract, implementation,
+asset type, rate and owner-limit checks halt collection on unsupported behavior.
+Raw/LP transfers, exchanges, liquidity operations, parameter changes and vault
+events retain transaction-level provenance in the event ledger. Non-swap flows
+are not counted as buy/sell volume. Unknown upgrades stop fresh publication.
+
+Holder history replays all stUSDS share transfers from deployment block 23,219,535.
+Supply and per-address balances reconcile before views publish. Cohorts and
+buckets use **share units**, so yield accrual cannot create retention. Verified
+share burns matched to vault Withdraw events appear as redemptions separately
+from Curve sales. Pool and labeled custody balances are excluded and shown
+alongside issued supply. Labels remain incomplete; addresses are not entities.
+
+`stusds-price-monitoring`, `stusds-collector` and `stusds-daily-rollups` all require
+`MARKET_PROFILE=stusds`, the same database reference and archive RPC reference as
+SKY. The collector runs every five minutes to support Last 60min; other short
+ranges aggregate to ten minutes. Daily rollups run at 00:35 UTC. Fresh collection
+runs before a resumable seven-day backfill and bounded holder-genesis replay.
+Backfill and holder health are tracked independently. A read-only live Refresh
+updates price, NAV/reference, capacity and quotes without writing snapshots.
+
+See [the approved PRD](docs/PRD_TOKEN_PRICE_MONITORING.md). Renaming the GitHub
+repository preserves the SKY Railway service IDs, custom domain and database.

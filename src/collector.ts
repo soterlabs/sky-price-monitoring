@@ -3,6 +3,10 @@ import {Store} from './store.js';
 import {Rpc} from './rpc.js';
 import {makePoints} from './math.js';
 import {collectHolders} from './holders.js';
+import {CurveRpc} from './curve.js';
+import {makeCurvePoints} from './curve-math.js';
+import {collectStusdsHolders} from './stusds-holders.js';
+import {backfillCurve} from './backfill.js';
 import {safeError} from './errors.js';
 export async function collect(store:Store,rpc:Rpc,backfillDays:number,confirmations:number) {
   return store.lock('collect',async()=> {
@@ -14,7 +18,7 @@ export async function collect(store:Store,rpc:Rpc,backfillDays:number,confirmati
       await rpc.verify(BigInt(safe.number));
       const latest=await store.latest();
       if(latest&&latest.time>end)throw new Error('RPC confirmed head is behind the saved checkpoint');
-      let from=Math.floor((end-backfillDays*86400)/600)*600;
+      let from=Math.floor((end-(store.market.id==='stusds'?3600:backfillDays*86400))/600)*600;
       if(latest) {
         // Re-read overlapping windows. If the anchor was reorganized, walk back
         // to a matching saved block before replacing any data.
@@ -36,7 +40,7 @@ export async function collect(store:Store,rpc:Rpc,backfillDays:number,confirmati
         for(let time=left;time<=right;time+=300)times.push(time);
         const snapshots=await rpc.boundaries(times,head);
         const events=await rpc.events(snapshots);
-        const points=makePoints(snapshots,events,300);
+        const points=store.market.id==='stusds'?makeCurvePoints(snapshots,events):makePoints(snapshots,events,300);
         await store.saveSegment(snapshots,events,points);
         console.log(JSON.stringify({event:'collection_segment',from:new Date(left*1000).toISOString(),through:new Date(right*1000).toISOString(),buckets:points.length,events:events.length}));
       }
@@ -46,8 +50,18 @@ export async function collect(store:Store,rpc:Rpc,backfillDays:number,confirmati
   });
 }
 async function main() {
-  const c=config(),store=new Store(c.databaseUrl);
-  try {const acquired=await collect(store,new Rpc(c.rpcUrl),c.backfillDays,c.confirmations);if(!acquired)console.log(JSON.stringify({event:'collector_already_running'}));else await collectHolders(store,new Rpc(c.rpcUrl));}
+  const c=config(),store=new Store(c.databaseUrl,c.market.id);
+  try {
+    const rpc=c.market.id==='stusds'?new CurveRpc(c.rpcUrl):new Rpc(c.rpcUrl);
+    const acquired=await collect(store,rpc,c.backfillDays,c.confirmations);
+    if(!acquired)console.log(JSON.stringify({event:'collector_already_running'}));
+    else if(c.market.id==='stusds'){
+      // A slow holder replay or historical backfill cannot prevent the next
+      // collector run from publishing its fresh pool/vault snapshot.
+      const outcomes=await Promise.allSettled([collectStusdsHolders(store,rpc),backfillCurve(store,rpc as CurveRpc,c.backfillDays)]);
+      for(const outcome of outcomes)if(outcome.status==='rejected'){console.error(JSON.stringify({event:'component_failed',error:safeError(outcome.reason)}));process.exitCode=1;}
+    }else await collectHolders(store,rpc);
+  }
   finally {await store.close();}
 }
 if(import.meta.url===`file://${process.argv[1]}`)main().catch(e=>{console.error(JSON.stringify({event:'collector_failed',error:safeError(e)}));process.exitCode=1;});

@@ -16,5 +16,5 @@ export async function rollup(store:Store,now=Date.now()) {
     }catch(e){await store.failure('daily',safeError(e));throw e;}
   });
 }
-async function main(){const c=config(),store=new Store(c.databaseUrl);try{await rollup(store);}finally{await store.close();}}
+async function main(){const c=config(),store=new Store(c.databaseUrl,c.market.id);try{await rollup(store);}finally{await store.close();}}
 if(import.meta.url===`file://${process.argv[1]}`)main().catch(e=>{console.error(JSON.stringify({event:'daily_failed',error:safeError(e)}));process.exitCode=1;});

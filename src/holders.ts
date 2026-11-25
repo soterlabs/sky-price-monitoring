@@ -1,6 +1,6 @@
 import {toHex} from 'viem';
 import {Rpc,selector,topic} from './rpc.js';
-import {SKY,POOL,periods,rangeSpec,type Period} from './config.js';
+import {SKY,POOL,markets,periods,rangeSpec,type Period} from './config.js';
 import {units,swapSide} from './math.js';
 import type {Snapshot} from './types.js';
 import type {Store} from './store.js';
@@ -30,6 +30,8 @@ export const excludedLabels:Record<string,string>={...exchangeLabels,[ZERO]:'Min
   '0xbdcfca946b6cdd965f99a839e4435bcdc1bc470b':'Legacy MKR/SKY converter',
   '0x67eadb3288ccede034ce95b0511dcc65cf630bb6':'SKY vesting',
 };
+export const stusdsExcludedLabels:Record<string,string>={...exchangeLabels,[ZERO]:'Mint / burn','0x000000000000000000000000000000000000dead':'Burn address',[markets.stusds.pool]:'Curve USDS/stUSDS pool',[markets.stusds.token]:'stUSDS vault','0xbe8e3e3618f7474f8cb1d074a26affef007e98fb':'Sky treasury','0x36c2abab95f9aacd4b05d65b89890e29d6382611':'Curve LP gauge'};
+export interface HolderOptions{pool?:string;excluded?:Record<string,string>;custody?:string[];redemptions?:{tx:string;owner:string;raw:string}[]}
 export interface HolderEvent {block:number;index:number;tx:string;kind:'liquid'|'position'|'vote'|'delegate';from:string;to:string;raw:string}
 export interface HolderState {block:number;hash:string;balances:Record<string,string>;positions:Record<string,string>;votes:Record<string,string>;owners:Record<string,string>;delegates:string[];complete:boolean;verifiedBalances?:boolean}
 export const initialState=():HolderState=>({block:START-1,hash:'',balances:{},positions:{},votes:{},owners:{},delegates:[],complete:false});
@@ -38,8 +40,8 @@ export function applyEvent(state:HolderState,e:HolderEvent,sign=1n){
   const map=e.kind==='liquid'?state.balances:e.kind==='position'?state.positions:state.votes;
   const v=BigInt(e.raw)*sign;add(map,e.from,-v);add(map,e.to,v);
 }
-export function balances(state:HolderState):Map<string,bigint>{
-  const out=new Map<string,bigint>(),excluded=new Set([...Object.keys(excludedLabels),...state.delegates]);
+export function balances(state:HolderState,labels:Record<string,string>=excludedLabels):Map<string,bigint>{
+  const out=new Map<string,bigint>(),excluded=new Set([...Object.keys(labels),...state.delegates]);
   for(const map of [state.balances,state.positions,state.votes])for(const [a,v]of Object.entries(map))if(!excluded.has(a))out.set(a,(out.get(a)??0n)+BigInt(v));
   for(const [a,v]of out){if(v<0n)throw new Error('Negative attributed holder balance');if(!v)out.delete(a);}return out;
 }
@@ -52,56 +54,61 @@ export function distribution(b:Map<string,bigint>){
   const share=(n:number)=>total?Number(sorted.slice(0,n).reduce((s,v)=>s+v,0n))*100/Number(total):0;
   return {counts,sky:sums.map(String),shares:sums.map(v=>total?Number(v)*100/Number(total):0),holders:b.size,total:units(String(total)),top10:share(10),top100:share(100)};
 }
-export function holderSeries(state:HolderState,events:HolderEvent[],snapshots:Snapshot[],trades:{tx:string;values:string[]}[]){
+export function holderSeries(state:HolderState,events:HolderEvent[],snapshots:Snapshot[],trades:{tx:string;values:string[]}[],options:HolderOptions={}){
+  const pool=options.pool??POOL,labels=options.excluded??excludedLabels;
   const start=snapshots[0]!,end=snapshots.at(-1)!;
   // Work on a copy: one period must never mutate another period's ledger.
   const work:HolderState={...state,balances:{...state.balances},positions:{...state.positions},votes:{...state.votes}};
   for(const e of events.filter(e=>e.block>Number(end.block)&&e.block<=state.block).sort((a,b)=>b.block-a.block||b.index-a.index))applyEvent(work,e,-1n);
   const ordered=events.filter(e=>e.block>Number(start.block)&&e.block<=Number(end.block)).sort((a,b)=>a.block-b.block||a.index-b.index);
   for(const e of [...ordered].reverse())applyEvent(work,e,-1n);
-  const baseline=balances(work),ranked=[...baseline].sort((a,b)=>a[1]>b[1]?-1:a[1]<b[1]?1:a[0].localeCompare(b[0]));
+  const baseline=balances(work,labels),ranked=[...baseline].sort((a,b)=>a[1]>b[1]?-1:a[1]<b[1]?1:a[0].localeCompare(b[0]));
   const cohort=new Map(ranked.map(([a],i)=>[a,i<100?0:i<1000?1:2]));
   const initial=[0n,0n,0n];for(const [a,v]of baseline)initial[cohort.get(a)!]=initial[cohort.get(a)!]!+v;
   const top=new Set(ranked.slice(0,100).map(([a])=>a));
   const byTx=new Map<string,{sides:Set<string>;input:bigint;output:bigint;transferredIn:bigint;transferredOut:bigint}>();
   for(const e of trades){const match=byTx.get(e.tx)??{sides:new Set<string>(),input:0n,output:0n,transferredIn:0n,transferredOut:0n};match.sides.add(swapSide(e.values));match.input+=BigInt(e.values[0]!);match.output+=BigInt(e.values[2]!);byTx.set(e.tx,match);}
-  for(const e of ordered)if(e.kind==='liquid'){const match=byTx.get(e.tx);if(match){if(e.to===POOL)match.transferredIn+=BigInt(e.raw);if(e.from===POOL)match.transferredOut+=BigInt(e.raw);}}
-  const stakingCustody=new Set([ENGINE,CHIEF,...state.delegates]);
+  for(const e of ordered)if(e.kind==='liquid'){const match=byTx.get(e.tx);if(match){if(e.to===pool)match.transferredIn+=BigInt(e.raw);if(e.from===pool)match.transferredOut+=BigInt(e.raw);}}
+  const stakingCustody=new Set(options.custody??[ENGINE,CHIEF,...state.delegates]);
+  const redeemed=new Map<string,bigint>(),burned=new Map<string,bigint>();
+  for(const e of options.redemptions??[]){const key=e.tx+':'+e.owner;redeemed.set(key,(redeemed.get(key)??0n)+BigInt(e.raw));}
+  for(const e of ordered)if(e.kind==='liquid'&&e.to===ZERO){const key=e.tx+':'+e.from;burned.set(key,(burned.get(key)??0n)+BigInt(e.raw));}
   let cursor=0;const points=[];
   for(let i=0;i<snapshots.length;i++){
-    const s=snapshots[i]!,activity={buys:0,sells:0,exchangeDeposits:0,otherOut:0};
+    const s=snapshots[i]!,activity={buys:0,sells:0,exchangeDeposits:0,otherOut:0,redemptions:0};
     while(cursor<ordered.length&&ordered[cursor]!.block<=Number(s.block)){
       const e=ordered[cursor++]!;applyEvent(work,e);
       if(e.kind==='liquid'){
         const n=units(e.raw),match=byTx.get(e.tx),sides=match?.sides,verified=match&&match.sides.size===1&&match.input===match.transferredIn&&match.output===match.transferredOut;
         if(top.has(e.from)){
-          if(e.to===POOL&&verified&&sides?.has('sell'))activity.sells+=n;
+          if(e.to===pool&&verified&&sides?.has('sell'))activity.sells+=n;
+          else if(e.to===ZERO&&redeemed.has(e.tx+':'+e.from)&&redeemed.get(e.tx+':'+e.from)===burned.get(e.tx+':'+e.from))activity.redemptions+=n;
           else if(exchangeLabels[e.to])activity.exchangeDeposits+=n;
           else if(!top.has(e.to)&&!stakingCustody.has(e.to))activity.otherOut+=n;
         }
-        if(top.has(e.to)&&e.from===POOL&&verified&&sides?.has('buy'))activity.buys+=n;
+        if(top.has(e.to)&&e.from===pool&&verified&&sides?.has('buy'))activity.buys+=n;
       }
     }
-    const b=balances(work),totals=[0n,0n,0n];let newcomers=0n;
+    const b=balances(work,labels),totals=[0n,0n,0n];let newcomers=0n;
     for(const [a,v]of b){const group=cohort.get(a);if(group===undefined)newcomers+=v;else totals[group]=totals[group]!+v;}
-    points.push({time:s.time,block:s.block,retention:totals.map((v,j)=>initial[j]?Number(v)*100/Number(initial[j]):null),distribution:distribution(b),activity,newcomerSky:units(String(newcomers))});
+    points.push({time:s.time,block:s.block,retention:totals.map((v,j)=>initial[j]?Number(v)*100/Number(initial[j]):null),distribution:distribution(b),...(options.excluded?{supplyShares:units(Object.values(work.balances).reduce((n,v)=>n+BigInt(v),0n)),excludedHoldings:units(Object.values(work.balances).reduce((n,v)=>n+BigInt(v),0n))-distribution(b).total}:{}),activity,newcomerSky:units(String(newcomers))});
   }
-  const final=balances(work),addresses=ranked.slice(0,100).map(([address,v])=>({address,start:units(String(v)),end:units(String(final.get(address)??0n)),change:units(String((final.get(address)??0n)-v))})).sort((a,b)=>a.change-b.change);
-  return {from:start.time,through:end.time,labels:['Initial top 100','Initial 101–1,000','Initial remaining holders'],buckets:bucketLabels,points,addresses,initialSky:initial.map(v=>units(String(v))),activity:points.reduce((s,p)=>({buys:s.buys+p.activity.buys,sells:s.sells+p.activity.sells,exchangeDeposits:s.exchangeDeposits+p.activity.exchangeDeposits,otherOut:s.otherOut+p.activity.otherOut}),{buys:0,sells:0,exchangeDeposits:0,otherOut:0})};
+  const final=balances(work,labels),addresses=ranked.slice(0,100).map(([address,v])=>({address,start:units(String(v)),end:units(String(final.get(address)??0n)),change:units(String((final.get(address)??0n)-v))})).sort((a,b)=>a.change-b.change);
+  return {shareSupply:units(Object.values(work.balances).reduce((n,v)=>n+BigInt(v),0n)),excludedHoldings:units(Object.values(work.balances).reduce((n,v)=>n+BigInt(v),0n))-distribution(final).total,from:start.time,through:end.time,labels:['Initial top 100','Initial 101–1,000','Initial remaining holders'],buckets:bucketLabels,points,addresses,initialSky:initial.map(v=>units(String(v))),activity:points.reduce((s,p)=>({buys:s.buys+p.activity.buys,sells:s.sells+p.activity.sells,exchangeDeposits:s.exchangeDeposits+p.activity.exchangeDeposits,otherOut:s.otherOut+p.activity.otherOut,redemptions:s.redemptions+p.activity.redemptions}),{buys:0,sells:0,exchangeDeposits:0,otherOut:0,redemptions:0})};
 }
 const initialized=new WeakMap<Store,Promise<void>>();
-async function schema(store:Store){
- let ready=initialized.get(store);if(!ready){ready=(async()=>{await store.initialize();const c=await store.pool.connect();try{await c.query('BEGIN');await c.query('SELECT pg_advisory_xact_lock(734902,3)');await c.query(`CREATE TABLE IF NOT EXISTS sky_holder_checkpoints(block bigint PRIMARY KEY,hash text NOT NULL,payload jsonb NOT NULL);
+export async function holderSchema(store:Store){
+ let ready=initialized.get(store);if(!ready){ready=(async()=>{await store.initialize();const c=await store.pool.connect();try{await c.query('BEGIN');await c.query('SELECT pg_advisory_xact_lock($1,3)',[store.lockNamespace]);await c.query(`CREATE TABLE IF NOT EXISTS sky_holder_checkpoints(block bigint PRIMARY KEY,hash text NOT NULL,payload jsonb NOT NULL);
  CREATE TABLE IF NOT EXISTS sky_holder_events(block bigint NOT NULL,log_index integer NOT NULL,tx text NOT NULL,payload jsonb NOT NULL,PRIMARY KEY(tx,log_index));
  CREATE INDEX IF NOT EXISTS sky_holder_events_block ON sky_holder_events(block);
  CREATE TABLE IF NOT EXISTS sky_holder_views(period text PRIMARY KEY,payload jsonb NOT NULL);`);await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}})().catch(e=>{initialized.delete(store);throw e;});initialized.set(store,ready);}await ready;
 }
-async function rewind(store:Store,block:number){const c=await store.pool.connect();try{await c.query('BEGIN');await c.query('DELETE FROM sky_holder_checkpoints WHERE block > $1',[block]);await c.query('DELETE FROM sky_holder_events WHERE block > $1',[block]);await c.query('DELETE FROM sky_holder_views');await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}}
-async function checkpoint(store:Store,state:HolderState,events:HolderEvent[]){const c=await store.pool.connect();try{await c.query('BEGIN');if(events.length)await c.query(`INSERT INTO sky_holder_events(block,log_index,tx,payload) SELECT (v->>'block')::bigint,(v->>'index')::integer,v->>'tx',v FROM jsonb_array_elements($1::jsonb) v ON CONFLICT(tx,log_index) DO UPDATE SET block=EXCLUDED.block,payload=EXCLUDED.payload`,[JSON.stringify(events)]);await c.query('INSERT INTO sky_holder_checkpoints(block,hash,payload) VALUES($1,$2,$3) ON CONFLICT(block) DO UPDATE SET hash=EXCLUDED.hash,payload=EXCLUDED.payload',[state.block,state.hash,JSON.stringify(state)]);await c.query('DELETE FROM sky_holder_checkpoints WHERE block < (SELECT block FROM sky_holder_checkpoints ORDER BY block DESC OFFSET 12 LIMIT 1)');await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}}
+export async function rewindHolders(store:Store,block:number){const c=await store.pool.connect();try{await c.query('BEGIN');await c.query('DELETE FROM sky_holder_checkpoints WHERE block > $1',[block]);await c.query('DELETE FROM sky_holder_events WHERE block > $1',[block]);await c.query('DELETE FROM sky_holder_views');await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}}
+export async function saveHolderCheckpoint(store:Store,state:HolderState,events:HolderEvent[]){const c=await store.pool.connect();try{await c.query('BEGIN');if(events.length)await c.query(`INSERT INTO sky_holder_events(block,log_index,tx,payload) SELECT (v->>'block')::bigint,(v->>'index')::integer,v->>'tx',v FROM jsonb_array_elements($1::jsonb) v ON CONFLICT(tx,log_index) DO UPDATE SET block=EXCLUDED.block,payload=EXCLUDED.payload`,[JSON.stringify(events)]);await c.query('INSERT INTO sky_holder_checkpoints(block,hash,payload) VALUES($1,$2,$3) ON CONFLICT(block) DO UPDATE SET hash=EXCLUDED.hash,payload=EXCLUDED.payload',[state.block,state.hash,JSON.stringify(state)]);await c.query('DELETE FROM sky_holder_checkpoints WHERE block < (SELECT block FROM sky_holder_checkpoints ORDER BY block DESC OFFSET 12 LIMIT 1)');await c.query('COMMIT');}catch(e){await c.query('ROLLBACK');throw e;}finally{c.release();}}
 async function readWord(rpc:Rpc,to:string,sig:string,block:number,args=''){return (await rpc.batch([{method:'eth_call',params:[{to,data:selector(sig)+args},toHex(block)]}]))[0] as string;}
 export async function collectHolders(store:Store,rpc:Rpc,budgetMs=300000){
- await schema(store);const connection=await store.pool.connect();
- const locked=(await connection.query<{locked:boolean}>('SELECT pg_try_advisory_lock(734902,2) AS locked')).rows[0]?.locked;
+ await holderSchema(store);const connection=await store.pool.connect();
+ const locked=(await connection.query<{locked:boolean}>('SELECT pg_try_advisory_lock($1,2) AS locked',[store.lockNamespace])).rows[0]?.locked;
  if(!locked){connection.release();return;}
  try{
   await store.attempt('holders');const started=Date.now(),latest=await store.latest();if(!latest)return;
@@ -112,7 +119,7 @@ export async function collectHolders(store:Store,rpc:Rpc,budgetMs=300000){
   const saved=(await store.pool.query<{payload:HolderState}>('SELECT payload FROM sky_holder_checkpoints ORDER BY block DESC')).rows;
   let state=initialState();for(const row of saved){if(row.payload.block<=target&&(await rpc.block(BigInt(row.payload.block))).hash===row.payload.hash){state=row.payload;break;}}
   if(saved.length&&state.block<START)throw new Error('No canonical holder checkpoint; rebuild required');
-  if(saved[0]&&saved[0].payload.block!==state.block)await rewind(store,state.block);
+  if(saved[0]&&saved[0].payload.block!==state.block)await rewindHolders(store,state.block);
   const validateAll=!state.complete||!state.verifiedBalances,changed=new Set<string>();
   while(state.block<target&&Date.now()-started<budgetMs){
     const from=state.block+1,to=Math.min(from+(from<25000000?99999:19999),target);
@@ -151,9 +158,15 @@ export async function collectHolders(store:Store,rpc:Rpc,budgetMs=300000){
       const voting=Object.values(state.votes).reduce((s,v)=>s+BigInt(v),0n);if(voting>BigInt(state.balances[CHIEF]??'0'))throw new Error('Governance positions exceed Chief custody balance');
       state.complete=true;
     }
-    await checkpoint(store,state,events);console.log(JSON.stringify({event:'holder_segment',block:to,target,events:events.length,addresses:Object.keys(state.balances).length}));
+    await saveHolderCheckpoint(store,state,events);console.log(JSON.stringify({event:'holder_segment',block:to,target,events:events.length,addresses:Object.keys(state.balances).length}));
   }
   if(state.block!==target||!state.complete)return;
+  await publishHolderViews(store,state,latest);
+  await store.success('holders');
+ }catch(e){await store.failure('holders',safeError(e));throw e;}
+ finally{try{await connection.query('SELECT pg_advisory_unlock($1,2)',[store.lockNamespace]);}finally{connection.release();}}
+}
+export async function publishHolderViews(store:Store,state:HolderState,latest:Snapshot){
   // Snapshot boundaries share the pool's exact confirmed blocks and granularity.
   for(const range of periods){
     const {from:requested,end,step}=rangeSpec(range,latest.time),intraday=step<86400;
@@ -163,15 +176,15 @@ export async function collectHolders(store:Store,rpc:Rpc,budgetMs=300000){
     if(snaps.length<2)continue;
     const events=(await store.pool.query<{payload:HolderEvent}>('SELECT payload FROM sky_holder_events WHERE block > $1 AND block <= $2 ORDER BY block,log_index',[snaps[0]!.block,latest.block])).rows.map(r=>r.payload);
     const trades=(await store.pool.query<{payload:{tx:string;values:string[]}}>(`SELECT payload FROM sky_events WHERE block_number > $1 AND block_number <= $2 AND payload->>'kind'='swap'`,[snaps[0]!.block,latest.block])).rows.map(r=>r.payload);
-    const view={...holderSeries(state,events,snaps,trades),complete:snaps[0]!.time===requested&&(!intraday||snaps.every((s,i)=>i===0||s.time-snaps[i-1]!.time===step)),asOf:new Date(end*1000).toISOString(),requestedFrom:requested};
+    const withdrawals=(await store.pool.query<{payload:{tx:string;owner:string;values:string[]}}>(`SELECT payload FROM sky_events WHERE block_number > $1 AND block_number <= $2 AND payload->>'kind'='withdraw'`,[snaps[0]!.block,latest.block])).rows.map(r=>({tx:r.payload.tx,owner:r.payload.owner,raw:r.payload.values[1]!}));
+    const opts:HolderOptions=store.market.id==='stusds'?{pool:store.market.pool,excluded:stusdsExcludedLabels,custody:[],redemptions:withdrawals}:{};
+    const view={market:store.market,...holderSeries(state,events,snaps,trades,opts),complete:snaps[0]!.time===requested&&(!intraday||snaps.every((s,i)=>i===0||s.time-snaps[i-1]!.time===step)),asOf:new Date(end*1000).toISOString(),requestedFrom:requested};
     await store.pool.query('INSERT INTO sky_holder_views(period,payload) VALUES($1,$2) ON CONFLICT(period) DO UPDATE SET payload=EXCLUDED.payload',[range,JSON.stringify(view)]);
   }
-  await store.success('holders');
- }catch(e){await store.failure('holders',safeError(e));throw e;}
- finally{try{await connection.query('SELECT pg_advisory_unlock(734902,2)');}finally{connection.release();}}
+
 }
 export async function holderData(store:Store,range:Period){
- await schema(store);const [view,job,indexed,latest]=await Promise.all([store.pool.query('SELECT payload FROM sky_holder_views WHERE period=$1',[range]),store.pool.query("SELECT attempted_at,succeeded_at,error FROM sky_jobs WHERE name='holders'"),store.pool.query('SELECT block FROM sky_holder_checkpoints ORDER BY block DESC LIMIT 1'),store.latest()]);
- const block=Number(indexed.rows[0]?.block??START-1),target=latest?Number(latest.block):START;
- return {data:view.rows[0]?.payload??null,job:job.rows[0]??null,progress:{block,target,percent:Math.max(0,Math.min(100,(block-START+1)/(target-START+1)*100))},excludedLabels,exchangeLabels};
+ await holderSchema(store);const [view,job,indexed,latest]=await Promise.all([store.pool.query('SELECT payload FROM sky_holder_views WHERE period=$1',[range]),store.pool.query("SELECT attempted_at,succeeded_at,error FROM sky_jobs WHERE name='holders'"),store.pool.query('SELECT block FROM sky_holder_checkpoints ORDER BY block DESC LIMIT 1'),store.latest()]);
+ const start=store.market.deployment,block=Number(indexed.rows[0]?.block??start-1),target=latest?Number(latest.block):start;
+ return {data:view.rows[0]?.payload??null,job:job.rows[0]??null,progress:{block,target,percent:Math.max(0,Math.min(100,(block-start+1)/(target-start+1)*100))},excludedLabels:store.market.id==='stusds'?stusdsExcludedLabels:excludedLabels,exchangeLabels,market:store.market};
 }

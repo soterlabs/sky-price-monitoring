@@ -1,16 +1,19 @@
 import {Pool, type PoolClient} from 'pg';
+import {marketProfile,type MarketId} from './config.js';
 import type {Snapshot,PoolEvent,Point,JobStatus} from './types.js';
 export class Store {
   readonly pool:Pool;
   private ready:Promise<void>|undefined;
-  constructor(url:string) {this.pool=new Pool({connectionString:url,max:4,connectionTimeoutMillis:10000,idleTimeoutMillis:10000,allowExitOnIdle:true});}
+  readonly market:ReturnType<typeof marketProfile>;
+  readonly lockNamespace:number;
+  constructor(url:string,profile:MarketId='sky') {this.market=marketProfile(profile);this.lockNamespace=this.market.lockNamespace;this.pool=new Pool({connectionString:url,...(profile==='stusds'?{options:'-c search_path=stusds'}:{}),max:profile==='stusds'?6:4,connectionTimeoutMillis:10000,idleTimeoutMillis:10000,allowExitOnIdle:true});}
   async initialize() {
     this.ready??=this.schema().catch(e=>{this.ready=undefined;throw e;});return this.ready;
   }
   private async schema() {
     const c=await this.pool.connect();
     try {
-      await c.query('BEGIN');await c.query('SELECT pg_advisory_xact_lock(734902,0)');
+      await c.query('BEGIN');await c.query('SELECT pg_advisory_xact_lock($1,0)',[this.lockNamespace]);if(this.market.id==='stusds')await c.query('CREATE SCHEMA IF NOT EXISTS stusds');
       await c.query(`CREATE TABLE IF NOT EXISTS sky_snapshots(time bigint PRIMARY KEY,block_number bigint NOT NULL,block_hash text NOT NULL,payload jsonb NOT NULL);
         CREATE TABLE IF NOT EXISTS sky_events(tx_hash text NOT NULL,log_index integer NOT NULL,block_number bigint NOT NULL,time bigint NOT NULL,payload jsonb NOT NULL,PRIMARY KEY(tx_hash,log_index));
         CREATE INDEX IF NOT EXISTS sky_events_time_idx ON sky_events(time);
@@ -21,18 +24,18 @@ export class Store {
       await c.query('COMMIT');
     } catch(e) {await c.query('ROLLBACK');throw e;} finally {c.release();}
   }
-  async lock(name:'collect'|'daily',fn:()=>Promise<void>):Promise<boolean> {
-    await this.initialize();const c=await this.pool.connect(),key=1;
+  async lock(name:'collect'|'daily'|'holders'|'backfill',fn:()=>Promise<void>):Promise<boolean> {
+    await this.initialize();const c=await this.pool.connect(),key=name==='holders'?2:name==='backfill'?4:1;
     // Rollups wait for collection so a concurrent segment replacement cannot
     // invalidate a day just before an older rollup overwrites it.
     let result:{rows:{locked:boolean}[]};
     try {
       result=name==='daily'
-        ?(await c.query('SELECT pg_advisory_lock(734902,$1)',[key]),{rows:[{locked:true}]})
-        :await c.query<{locked:boolean}>('SELECT pg_try_advisory_lock(734902,$1) AS locked',[key]);
+        ?(await c.query('SELECT pg_advisory_lock($1,$2)',[this.lockNamespace,key]),{rows:[{locked:true}]})
+        :await c.query<{locked:boolean}>('SELECT pg_try_advisory_lock($1,$2) AS locked',[this.lockNamespace,key]);
     }catch(e){c.release();throw e;}
     if (!result.rows[0]?.locked) {c.release();return false;}
-    try {await fn();return true;} finally {try {await c.query('SELECT pg_advisory_unlock(734902,$1)',[key]);} finally {c.release();}}
+    try {await fn();return true;} finally {try {await c.query('SELECT pg_advisory_unlock($1,$2)',[this.lockNamespace,key]);} finally {c.release();}}
   }
   async attempt(name:string) {await this.initialize();await this.pool.query(`INSERT INTO sky_jobs(name,attempted_at) VALUES($1,now()) ON CONFLICT(name) DO UPDATE SET attempted_at=now()`,[name]);}
   async success(name:string) {await this.pool.query('UPDATE sky_jobs SET succeeded_at=now(),error=NULL WHERE name=$1',[name]);}
@@ -54,6 +57,8 @@ export class Store {
   }
   async saveSegment(snapshots:Snapshot[],events:PoolEvent[],points:Point[]) {
     await this.initialize();if (!snapshots.length) throw new Error('No segment snapshots');
+    if(snapshots.some(s=>(this.market.id==='stusds')!==!!s.curve))throw new Error('Snapshot market does not match store profile');
+    if(this.market.id==='stusds'){const provenance={market:this.market.id,chainId:1,pool:this.market.pool,metricVersion:1};snapshots=snapshots.map(s=>({...s,...provenance}));events=events.map(e=>({...e,...provenance}));points=points.map(p=>({...p,...provenance}));}
     const a=snapshots[0]!,b=snapshots.at(-1)!,c=await this.pool.connect();
     try {
       await c.query('BEGIN');

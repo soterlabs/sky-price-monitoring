@@ -20,7 +20,7 @@ export function config() {
   const rpcUrl = process.env.ETH_RPC;
   if (!rpcUrl) throw new Error('ETH_RPC is required');
   if (!['http:','https:'].includes(new URL(rpcUrl).protocol)) throw new Error('Invalid ETH_RPC');
-  return {databaseUrl,rpcUrl,defaultPeriod:period(process.env.DASHBOARD_DEFAULT_PERIOD ?? '24h'),
+  return {databaseUrl,rpcUrl,market:marketProfile(),defaultPeriod:period(process.env.DASHBOARD_DEFAULT_PERIOD ?? '24h'),
     backfillDays:integer('BACKFILL_DAYS',7,1,180),confirmations:integer('CONFIRMATIONS',12,2,256),port:integer('PORT',3000,1,65535)};
 }
 
@@ -31,3 +31,13 @@ export function rangeSpec(range:Period,latestTime:number){
   const from=range==='60m'?end-3600:step===600?end-days*86400:Math.floor(end/86400)*86400-(days-1)*86400;
   return {from,end,step,refreshSeconds:range==='60m'?300:600};
 }
+
+export type MarketId='sky'|'stusds';
+export const markets={
+ sky:{id:'sky',chainId:1,metricVersion:1,deployment:20663735,symbol:'SKY',pool:POOL,token:SKY,amm:'Uniswap V2',schema:'public',lockNamespace:734902,averageKind:'oracle-twap'},
+ stusds:{id:'stusds',chainId:1,metricVersion:1,deployment:23219535,symbol:'stUSDS',pool:'0x2c7c98a3b1582d83c43987202aeff638312478ae',token:'0x99cd4ec3f88a45940936f469e4bb72a2a701eeb9',amm:'Curve StableSwap NG',schema:'stusds',lockNamespace:734903,averageKind:'sampled-trapezoid-5m'}
+} as const;
+export function marketProfile(value=process.env.MARKET_PROFILE??'sky'){
+ if(value!=='sky'&&value!=='stusds')throw new Error('Invalid MARKET_PROFILE');return markets[value];
+}
+export type Market=ReturnType<typeof marketProfile>;

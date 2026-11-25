@@ -45,10 +45,10 @@ it('marks missing intervals as incomplete and never fabricates their volume',()=
 });
 it('uses asymmetric buy/sell execution quotes with the V2 fee included',()=>{
   const p=makePoints(snapshots,events).at(-1)!;const d=depth(p);
-  assert.ok(Math.abs(d.quote10k.buyPercent-0.5823529897483)<1e-10);
-  assert.ok(Math.abs(d.quote100k.sellPercent-3.02128038824184)<1e-10);
-  assert.ok(Math.abs(d.buyDepth1Percent-24839.10436479)<1e-6);
-  assert.ok(d.quote100k.buyPercent>d.quote10k.buyPercent);
+  assert.ok(Math.abs(d.quote10k.buyPercent!-0.5823529897483)<1e-10);
+  assert.ok(Math.abs(d.quote100k.sellPercent!-3.02128038824184)<1e-10);
+  assert.ok(Math.abs(d.buyDepth1Percent!-24839.10436479)<1e-6);
+  assert.ok(d.quote100k.buyPercent!>d.quote10k.buyPercent!);
 });
 it('handles cumulative oracle wraparound',()=>{
   const a={...snapshots[0]!,time:600,reserveTime:600,cumulativeRaw:String(2n**256n-1n)};

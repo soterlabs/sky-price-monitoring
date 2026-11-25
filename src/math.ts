@@ -1,8 +1,9 @@
 import {formatUnits} from 'viem';
+import {curveDepth,displayVault,displayVaultFlow,emptyVaultFlow} from './curve-math.js';
 import type {Snapshot, PoolEvent, Point} from './types.js';
 const Q = 2n**112n, MOD = 2n**256n;
 export const units = (v: string|bigint) => Number(formatUnits(BigInt(v),18));
-export const spot = (s: Pick<Snapshot,'skyRaw'|'usdsRaw'>) => Number(s.usdsRaw)/Number(s.skyRaw);
+export const spot = (s: Pick<Snapshot,'skyRaw'|'usdsRaw'|'curve'>) => s.curve?units(s.curve.priceRaw):Number(s.usdsRaw)/Number(s.skyRaw);
 export function swapSide(values:string[]):'buy'|'sell'|'flash' {
   const [sIn,uIn,sOut,uOut]=values.map(BigInt) as [bigint,bigint,bigint,bigint];
   const ds=sIn-sOut,du=uIn-uOut;
@@ -47,10 +48,10 @@ export function makePoints(snapshots: Snapshot[], events: PoolEvent[], interval:
             if (!isBuy) throw new Error('Protocol buyback is not a SKY purchase');
             buyback+=uIn;skyBuyback+=sOut;buybackCount++;
           }
-        } else {
+        } else if(e.kind==='mint'||e.kind==='burn') {
           const sign=e.kind==='mint'?1n:-1n;
           ds+=sign*v[0]!;du+=sign*v[1]!;lpSky+=sign*v[0]!;lpUsds+=sign*v[1]!;
-        }
+        }else throw new Error('Unsupported Uniswap event');
       }
       previous=e;
     }
@@ -71,7 +72,8 @@ export function combine(points: Point[]): Point|null {
   if (!points.length) return null;
   const first=points[0]!,last=points.at(-1)!,duration=points.reduce((s,p)=>s+p.duration,0);
   const sums=Object.fromEntries(rawFields.map(k=>[k,String(points.reduce((s,p)=>s+BigInt(p[k]??'0'),0n))])) as Pick<Point,typeof rawFields[number]>;
-  return {...last,...sums,from:first.from,open:first.open,high:Math.max(...points.map(p=>p.high)),low:Math.min(...points.map(p=>p.low)),duration,
+  const curveFields=last.curve?{vaultFlow:points.reduce((v,p)=>{for(const k of ['depositRaw','withdrawRaw','mintRaw','burnRaw']as const)v[k]=String(BigInt(v[k])+BigInt(p.vaultFlow?.[k]??'0'));v.deposits+=p.vaultFlow?.deposits??0;v.withdrawals+=p.vaultFlow?.withdrawals??0;return v;},emptyVaultFlow()),minGapBps:points.some(p=>p.minGapBps!=null)?Math.min(...points.flatMap(p=>p.minGapBps==null?[]:[p.minGapBps])):null,maxGapBps:points.some(p=>p.maxGapBps!=null)?Math.max(...points.flatMap(p=>p.maxGapBps==null?[]:[p.maxGapBps])):null,otherUsdsRaw:String(points.reduce((n,p)=>n+BigInt(p.otherUsdsRaw??'0'),0n))}:{};
+  return {...last,...sums,...curveFields,from:first.from,open:first.open,high:Math.max(...points.map(p=>p.high)),low:Math.min(...points.map(p=>p.low)),duration,
     twap:points.reduce((s,p)=>s+p.twap*p.duration,0)/duration,
     samples:points.reduce((s,p)=>s+p.samples,0),complete:points.every(p=>p.complete)&&duration===last.through-first.from,
     buyCount:points.reduce((s,p)=>s+p.buyCount,0),sellCount:points.reduce((s,p)=>s+p.sellCount,0),buybackCount:points.reduce((s,p)=>s+p.buybackCount,0),flashCount:points.reduce((s,p)=>s+(p.flashCount??0),0)};
@@ -88,7 +90,8 @@ export function dailyPoints(points: Point[]): Point[] {
     const p=combine(rows)!;return {...p,complete:p.complete&&p.from===date&&p.through===date+86400};
   });
 }
-export function depth(p: Pick<Point,'skyRaw'|'usdsRaw'>) {
+export function depth(p: Pick<Point,'skyRaw'|'usdsRaw'|'curve'>) {
+  if(p.curve)return curveDepth({...p,curve:p.curve});
   const usds=units(p.usdsRaw),sky=units(p.skyRaw),price=usds/sky;
   const quote=(size:number) => {
     const skyOut=997*size*sky/(1000*usds+997*size);
@@ -107,7 +110,7 @@ export function summarize(points: Point[]) {
     if (row.from===previousTime) variance+=Math.log(row.close/previous)**2;
     previous=row.close;previousTime=row.through;
   }
-  return {from:p.from,through:p.through,open:p.open,close:p.close,high:p.high,low:p.low,twap:p.twap,changePercent:(p.close/p.open-1)*100,
+  return {...(p.curve?{vault:displayVault(p.curve),vaultFlow:displayVaultFlow(p.vaultFlow??emptyVaultFlow()),minGapBps:p.minGapBps??null,maxGapBps:p.maxGapBps??null}:{}),from:p.from,through:p.through,open:p.open,close:p.close,high:p.high,low:p.low,twap:p.twap,changePercent:(p.close/p.open-1)*100,
     spotVsTwapPercent:(p.close/p.twap-1)*100,buyUsds:buy,sellUsds:sell,volumeUsds:volume,netBuyUsds:buy-sell,
     buySharePercent:volume?buy/volume*100:null,imbalancePercent:volume?(buy-sell)/volume*100:null,
     buybackUsds:buyback,otherBuyUsds:buy-buyback,otherNetBuyUsds:buy-buyback-sell,buybackSharePercent:buy?buyback/buy*100:null,
@@ -116,7 +119,7 @@ export function summarize(points: Point[]) {
 }
 export function displayPoint(p:Point) {
   const buy=units(p.buyRaw),sell=units(p.sellRaw),buyback=units(p.buybackRaw);
-  return {from:p.from,through:p.through,open:p.open,high:p.high,low:p.low,close:p.close,twap:p.twap,complete:p.complete,
+  return {...(p.curve?{referencePrice:units(p.curve.redeemRaw),navPrice:units(p.curve.navRaw),gapBps:displayVault(p.curve).gapBps,capacityUsds:units(p.curve.capacityRaw),vaultDepositUsds:units(p.vaultFlow?.depositRaw??'0'),vaultWithdrawUsds:units(p.vaultFlow?.withdrawRaw??'0')}:{}),from:p.from,through:p.through,open:p.open,high:p.high,low:p.low,close:p.close,twap:p.twap,complete:p.complete,
     buyUsds:buy,sellUsds:sell,buybackUsds:buyback,otherBuyUsds:buy-buyback,netBuyUsds:buy-sell,otherNetBuyUsds:buy-buyback-sell,
     volumeUsds:buy+sell,buyCount:p.buyCount,sellCount:p.sellCount,buybackCount:p.buybackCount,...depth(p)};
 }

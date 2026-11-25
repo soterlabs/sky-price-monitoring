@@ -5,17 +5,17 @@ export const selector=(signature:string)=>keccak256(toHex(signature)).slice(0,10
 export const topic=(signature:string)=>keccak256(toHex(signature));
 export const topics={sync:topic('Sync(uint112,uint112)'),swap:topic('Swap(address,uint256,uint256,uint256,uint256,address)'),mint:topic('Mint(address,uint256,uint256)'),burn:topic('Burn(address,uint256,uint256,address)')};
 const execTopic=topic('Exec(uint256,uint256)');
-type Call={method:string;params:unknown[]};
-interface Block {number:string;timestamp:string;hash:string}
-interface Log {address:string;topics:string[];data:string;transactionHash:string;logIndex:string;blockNumber:string;removed?:boolean}
-const words=(data:string)=>{const s=data.slice(2);return Array.from({length:s.length/64},(_,i)=>BigInt('0x'+s.slice(i*64,i*64+64)));};
-const addr=(v:string)=>'0x'+v.slice(-40).toLowerCase();
+export type Call={method:string;params:unknown[]};
+export interface Block {number:string;timestamp:string;hash:string}
+export interface Log {address:string;topics:string[];data:string;transactionHash:string;logIndex:string;blockNumber:string;removed?:boolean}
+export const words=(data:string)=>{const s=data.slice(2);return Array.from({length:s.length/64},(_,i)=>BigInt('0x'+s.slice(i*64,i*64+64)));};
+export const addr=(v:string)=>'0x'+v.slice(-40).toLowerCase();
 const wordAddr=(v:string)=>v.slice(2).padStart(64,'0');
-const read=(to:string,sig:string,n:bigint,args=''):Call=>({method:'eth_call',params:[{to,data:selector(sig)+args},toHex(n)]});
+export const read=(to:string,sig:string,n:bigint,args=''):Call=>({method:'eth_call',params:[{to,data:selector(sig)+args},toHex(n)]});
 export class Rpc {
   private id=0;
   constructor(private readonly url:string){}
-  async batch(calls:Call[]):Promise<unknown[]> {
+  async batch(calls:Call[],allowReverts=false):Promise<unknown[]> {
     if(!calls.length)return [];
     for(let attempt=0;attempt<4;attempt++) {
       try {
@@ -25,16 +25,16 @@ export class Rpc {
         const body=await response.json() as {id:number;result?:unknown;error?:{code:number}}[];
         if(!Array.isArray(body))throw new Error('Invalid RPC batch response');
         const indexed=new Map(body.map(r=>[r.id,r]));
-        return ids.map(id=>{const r=indexed.get(id);if(!r||r.error||r.result===undefined)throw new Error(`RPC ${calls[ids.indexOf(id)]!.method} failed (${r?.error?.code??'missing result'})`);return r.result;});
+        return ids.map(id=>{const r=indexed.get(id);if(r?.error&&allowReverts&&calls[ids.indexOf(id)]?.method==='eth_call'&&r.error.code===3)return null;if(!r||r.error||r.result===undefined)throw new Error(`RPC ${calls[ids.indexOf(id)]!.method} failed (${r?.error?.code??'missing result'})`);return r.result;});
       } catch(error) {if(attempt===3)throw error;await new Promise(r=>setTimeout(r,500*2**attempt));}
     }
     throw new Error('RPC unavailable');
   }
-  async many(calls:Call[]):Promise<unknown[]> {
+  async many(calls:Call[],allowReverts=false):Promise<unknown[]> {
     const out:unknown[]=[];
     for(let i=0;i<calls.length;i+=60) {
       const chunks=[];for(let j=i;j<Math.min(i+60,calls.length);j+=20)chunks.push(calls.slice(j,j+20));
-      const groups=await Promise.all(chunks.map(c=>this.batch(c)));out.push(...groups.flat());
+      const groups=await Promise.all(chunks.map(c=>this.batch(c,allowReverts)));out.push(...groups.flat());
     }return out;
   }
   async block(n:bigint|'latest'):Promise<Block> {
@@ -54,7 +54,7 @@ export class Rpc {
     if((await this.block(n)).hash!==head.hash)throw new Error('Live block was reorganized; retry');
     return {time:Number(BigInt(head.timestamp)),block:String(n),hash:head.hash,blockTime:Number(BigInt(head.timestamp)),skyRaw:String(sky),usdsRaw:String(usds),reserveTime:Number(reserveTime),cumulativeRaw:String(BigInt(values[1]!)),lpRaw:String(BigInt(values[2]!)),flapper:addr(values[3]!)};
   }
-  async boundaries(times:number[],head:Block):Promise<Snapshot[]> {
+  async boundaryBlocks(times:number[],head:Block):Promise<Block[]> {
     const hn=BigInt(head.number),ht=Number(BigInt(head.timestamp));
     let guesses=times.map(t=>hn-BigInt(Math.floor((ht-t)/12)));
     for(let iteration=0;iteration<8;iteration++) {
@@ -73,22 +73,26 @@ export class Rpc {
       if(!(Number(BigInt(b.timestamp))<=times[i]!&&Number(BigInt(next.timestamp))>times[i]!))throw new Error('Timestamp boundary verification failed');
       bs[i]=b;
     }
+    return bs;
+  }
+  async boundaries(times:number[],head:Block):Promise<Snapshot[]> {
+    const bs=await this.boundaryBlocks(times,head),guesses=bs.map(b=>BigInt(b.number));
     const values=await this.many(guesses.flatMap(n=>[read(POOL,'getReserves()',n),read(POOL,'price0CumulativeLast()',n),read(POOL,'totalSupply()',n),read(SPLITTER,'flapper()',n)])) as string[];
     return times.map((time,i)=> {
       const [s,u,t]=words(values[4*i]!);if(!s||!u||t===undefined)throw new Error('Invalid pool reserves');
       return {time,block:String(guesses[i]!),hash:bs[i]!.hash,blockTime:Number(BigInt(bs[i]!.timestamp)),skyRaw:String(s),usdsRaw:String(u),reserveTime:Number(t),cumulativeRaw:String(BigInt(values[4*i+1]!)),lpRaw:String(BigInt(values[4*i+2]!)),flapper:addr(values[4*i+3]!)};
     });
   }
-  async logs(from:bigint,to:bigint,address:string|string[],topic0:string[],span=2000n):Promise<Log[]> {
+  async logs(from:bigint,to:bigint,address:string|string[],topic0:string[],span=2000n,indexed:(string|string[]|null)[]=[]):Promise<Log[]> {
     if(from>to)return [];
-    const calls:Call[]=[];for(let n=from;n<=to;n+=span)calls.push({method:'eth_getLogs',params:[{address,fromBlock:toHex(n),toBlock:toHex(n+span-1n<to?n+span-1n:to),topics:[topic0]}]});
+    const calls:Call[]=[];for(let n=from;n<=to;n+=span)calls.push({method:'eth_getLogs',params:[{address,fromBlock:toHex(n),toBlock:toHex(n+span-1n<to?n+span-1n:to),topics:[topic0,...indexed]}]});
     let groups:Log[][];
     try{groups=await this.many(calls) as Log[][];}
     catch(error){
       // Historical token activity can exceed provider result limits even when
       // the requested block span is accepted. Retry with smaller exact ranges.
       if(span<=1n||!(error instanceof Error)||!/RPC eth_getLogs failed \((-32602|-32005|-32000)\)/.test(error.message))throw error;
-      return this.logs(from,to,address,topic0,span/2n);
+      return this.logs(from,to,address,topic0,span/2n,indexed);
     }
     return [...new Map(groups.flat().filter(l=>!l.removed).map(l=>[`${l.transactionHash}:${l.logIndex}`,l])).values()].sort((a,b)=>Number(BigInt(a.blockNumber)-BigInt(b.blockNumber))||Number(BigInt(a.logIndex)-BigInt(b.logIndex)));
   }
