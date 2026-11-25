@@ -94,7 +94,7 @@ function render(d){
   const jobIssue=d.jobs?.find(j=>j.error&&j.name!=='holders'),coverage=$('coverage'),notes=[];
   if(d.coverage&&!d.coverage.complete)notes.push('Available history starts '+new Date(d.coverage.actualFrom*1000).toLocaleString(undefined,{timeZone:'UTC',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})+' UTC. Figures cover the available portion of this range.');
   if(d.coverage?.provisionalToday)notes.push('Today’s daily point is provisional.');
-  if(jobIssue)notes.push('Latest '+(jobIssue.name==='collector'?'collection':'daily rollup')+' issue: '+jobIssue.error);
+  if(jobIssue)notes.push('Latest '+(jobIssue.name==='collector'?'collection':jobIssue.name==='backfill'?'history backfill':'daily rollup')+' issue: '+jobIssue.error);
   coverage.hidden=!notes.length;coverage.textContent=notes.join(' ');
   if(d.latest){set('spot',price(d.latest.price));set('tvl',compact(d.latest.tvlUsds));set('pool-reserve',compact(d.latest.usds)+' USDS held');set('usds-reserve',compact(d.latest.usds)+' USDS');set('sky-reserve',compact(d.latest.sky)+' '+TOKEN);set('depth',compact(d.latest.buyDepth1Percent)+' USDS');set('buy-10k',pct(d.latest.quote10k.buyPercent));set('sell-10k',pct(d.latest.quote10k.sellPercent));set('buy-100k',pct(d.latest.quote100k.buyPercent));set('sell-100k',pct(d.latest.quote100k.sellPercent));}
   const s=d.summary;

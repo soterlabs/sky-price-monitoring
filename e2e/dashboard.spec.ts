@@ -67,7 +67,7 @@ for(const width of [390,1440])test(`stUSDS charts, vault references and live ref
  const payload={...data('24h'),latest:{price:Number(last.curve.priceRaw)/1e18,...depth(last),vault:v},summary:s,points:ps.map(displayPoint),vaultEvents:cf.events.filter((e:any)=>e.kind==='deposit'||e.kind==='withdraw').map((e:any)=>({time:e.time,tx:e.tx,kind:e.kind,owner:e.owner,receiver:e.recipient,assets:Number(e.values[0])/1e18,shares:Number(e.values[1])/1e18}))};
  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));await page.setViewportSize({width,height:900});
  await page.route('**/api/dashboard?*',r=>r.fulfill({json:payload}));await page.route('**/api/holders?*',r=>r.fulfill({json:{data:null}}));
- await page.route('**/api/live',r=>r.fulfill({json:{block:'26499999',asOf:'2026-11-25T11:00:00Z',latest:{...payload.latest,price:1.05,vault:{...v,referencePrice:1.10,gapBps:-454.55}}}}));
+ await page.route('**/api/live',r=>r.fulfill({json:{block:'26499999',asOf:'2026-11-25T11:00:00Z',latest:{...payload.latest,price:1.05,vault:{...v,referencePrice:1.10,gapBps:-454.55,gapPercent:-4.5455}}}}));
  await page.goto('/?market=stusds');await expect(page.locator('#spot')).toHaveText(payload.latest.price.toFixed(6));await expect(page.locator('canvas')).toHaveCount(9);
  await expect(page.locator('#buyback-title')).toHaveText('Vault deposits and redemptions');await expect(page.locator('#vault-reference')).toHaveText(v.referencePrice.toFixed(6)+' USDS');
  await expect(page.locator('#buyback-spent')).not.toHaveText('—');await expect(page.locator('#vault-quotes tr')).toHaveCount(2);expect(await page.locator('body').evaluate(el=>el.scrollWidth)).toBeLessThanOrEqual(width);

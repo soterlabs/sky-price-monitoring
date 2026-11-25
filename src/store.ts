@@ -6,7 +6,7 @@ export class Store {
   private ready:Promise<void>|undefined;
   readonly market:ReturnType<typeof marketProfile>;
   readonly lockNamespace:number;
-  constructor(url:string,profile:MarketId='sky') {this.market=marketProfile(profile);this.lockNamespace=this.market.lockNamespace;this.pool=new Pool({connectionString:url,...(profile==='stusds'?{options:'-c search_path=stusds'}:{}),max:4,connectionTimeoutMillis:10000,idleTimeoutMillis:10000,allowExitOnIdle:true});}
+  constructor(url:string,profile:MarketId='sky') {this.market=marketProfile(profile);this.lockNamespace=this.market.lockNamespace;this.pool=new Pool({connectionString:url,...(profile==='stusds'?{options:'-c search_path=stusds'}:{}),max:profile==='stusds'?6:4,connectionTimeoutMillis:10000,idleTimeoutMillis:10000,allowExitOnIdle:true});}
   async initialize() {
     this.ready??=this.schema().catch(e=>{this.ready=undefined;throw e;});return this.ready;
   }
@@ -24,8 +24,8 @@ export class Store {
       await c.query('COMMIT');
     } catch(e) {await c.query('ROLLBACK');throw e;} finally {c.release();}
   }
-  async lock(name:'collect'|'daily'|'holders',fn:()=>Promise<void>):Promise<boolean> {
-    await this.initialize();const c=await this.pool.connect(),key=name==='holders'?2:1;
+  async lock(name:'collect'|'daily'|'holders'|'backfill',fn:()=>Promise<void>):Promise<boolean> {
+    await this.initialize();const c=await this.pool.connect(),key=name==='holders'?2:name==='backfill'?4:1;
     // Rollups wait for collection so a concurrent segment replacement cannot
     // invalidate a day just before an older rollup overwrites it.
     let result:{rows:{locked:boolean}[]};
@@ -57,6 +57,7 @@ export class Store {
   }
   async saveSegment(snapshots:Snapshot[],events:PoolEvent[],points:Point[]) {
     await this.initialize();if (!snapshots.length) throw new Error('No segment snapshots');
+    if(snapshots.some(s=>(this.market.id==='stusds')!==!!s.curve))throw new Error('Snapshot market does not match store profile');
     if(this.market.id==='stusds'){const provenance={market:this.market.id,chainId:1,pool:this.market.pool,metricVersion:1};snapshots=snapshots.map(s=>({...s,...provenance}));events=events.map(e=>({...e,...provenance}));points=points.map(p=>({...p,...provenance}));}
     const a=snapshots[0]!,b=snapshots.at(-1)!,c=await this.pool.connect();
     try {
