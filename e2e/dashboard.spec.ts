@@ -61,3 +61,19 @@ test('last hour uses the shared selector, five-minute holder snapshots and five-
   await expect(page.locator('#period option:checked')).toHaveText('Last 60min - 5min updates');await expect(page.locator('#holder-date')).toHaveAttribute('max','12');expect(hourlyReads).toBe(1);
   await page.clock.runFor(299000);expect(hourlyReads).toBe(1);await page.clock.runFor(2000);await expect.poll(()=>hourlyReads).toBe(2);
 });
+
+for(const width of [390,1440])test(`stUSDS charts, vault references and live refresh at ${width}px`,async({page})=>{
+ const {makeCurvePoints,displayVault}=await import('../src/curve-math.js');const cf=JSON.parse(gunzipSync(readFileSync(new URL('../test/fixtures/stusds-hour.json.gz',import.meta.url))).toString());const ps=makeCurvePoints(cf.snapshots,cf.events),last=cf.snapshots.at(-1),v=displayVault(last.curve),s=summarize(ps);
+ const payload={...data('24h'),latest:{price:Number(last.curve.priceRaw)/1e18,...depth(last),vault:v},summary:s,points:ps.map(displayPoint),vaultEvents:cf.events.filter((e:any)=>e.kind==='deposit'||e.kind==='withdraw').map((e:any)=>({time:e.time,tx:e.tx,kind:e.kind,owner:e.owner,receiver:e.recipient,assets:Number(e.values[0])/1e18,shares:Number(e.values[1])/1e18}))};
+ const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));await page.setViewportSize({width,height:900});
+ await page.route('**/api/dashboard?*',r=>r.fulfill({json:payload}));await page.route('**/api/holders?*',r=>r.fulfill({json:{data:null}}));
+ await page.route('**/api/live',r=>r.fulfill({json:{block:'26499999',asOf:'2026-11-25T11:00:00Z',latest:{...payload.latest,price:1.05,vault:{...v,referencePrice:1.10,gapBps:-454.55}}}}));
+ await page.goto('/?market=stusds');await expect(page.locator('#spot')).toHaveText(payload.latest.price.toFixed(6));await expect(page.locator('canvas')).toHaveCount(9);
+ await expect(page.locator('#buyback-title')).toHaveText('Vault deposits and redemptions');await expect(page.locator('#vault-reference')).toHaveText(v.referencePrice.toFixed(6)+' USDS');
+ await expect(page.locator('#buyback-spent')).not.toHaveText('—');await expect(page.locator('#vault-quotes tr')).toHaveCount(2);expect(await page.locator('body').evaluate(el=>el.scrollWidth)).toBeLessThanOrEqual(width);
+ await page.locator('#flow-chart').focus();await page.keyboard.press('ArrowLeft');await expect(page.locator('#flow-chart + .chart-hover [data-series="green"]')).toBeVisible();await expect(page.locator('#flow-chart + .chart-hover [data-series="blue"]')).toHaveCount(0);
+ for(const id of ['reference-chart','gap-chart','buyback-chart']){await page.locator('#'+id).focus();await page.keyboard.press('ArrowLeft');await expect(page.locator('#'+id+' + .chart-hover')).toBeVisible();}
+ const average=await page.locator('#twap').textContent();await page.click('#refresh');await expect(page.locator('#spot')).toHaveText('1.050000');await expect(page.locator('#vault-reference')).toHaveText('1.100000 USDS');await expect(page.locator('#twap')).toHaveText(average!);
+ await page.locator('.recent-vault summary').click();await expect(page.locator('#vault-events tr').first().locator('a').first()).toHaveAttribute('href',/^https:\/\/etherscan.io\/address\/0x/);expect(errors).toEqual([]);
+ await page.screenshot({path:`test-results/stusds-${width}.png`,fullPage:true});
+});

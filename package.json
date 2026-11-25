@@ -1,9 +1,9 @@
 {
-  "name": "sky-price-monitoring",
+  "name": "token-price-monitoring",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "SKY/USDS Uniswap V2 price, trading flows and protocol buyback monitoring",
+  "description": "SKY Uniswap V2 and stUSDS Curve market, vault and holder monitoring",
   "engines": {
     "node": ">=22"
   },
