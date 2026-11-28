@@ -1,3 +1,4 @@
+import { liquidation } from './liquidation.js';
 import type {Period} from './config.js';
 import {POOL,rangeSpec} from './config.js';
 import type {Store} from './store.js';
@@ -24,6 +25,7 @@ export async function dashboardData(store:Store,range:Period,now=Date.now()) {
     return {tx:e.tx,time:e.time,side,buyback:e.buyback,usds:units(du<0n?-du:du),sky:units(ds<0n?-ds:ds),sender:e.sender};
   });
   return {range,asOf:new Date(end*1000).toISOString(),fresh:now-end*1000<(range==='60m'?15:25)*60000&&!collector?.error,collecting:false,jobs,pool:store.market.pool,market:store.market,
+    liquidation:store.market.id==='stusds'?liquidation():null,
     latest:{...(latest.curve?{vault:displayVault(latest.curve)}:{}),price:spot(latest),...depth(latest),block:latest.block,blockTime:latest.blockTime,flapper:latest.flapper},
     interval:range==='60m'?'5-minute':intraday?'10-minute':'daily',refreshSeconds,coverage:{complete,requestedFrom,actualFrom:points[0]?.from??end,through:end,availableSince:earliest.time,provisionalToday:!intraday&&points.at(-1)?.through!==Math.floor(end/86400)*86400},
     summary,points:points.map(displayPoint),trades,

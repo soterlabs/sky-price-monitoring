@@ -10,6 +10,8 @@ const periodNames={'60m':'Last 60min','24h':'Last 24h','7d':'7 days','30d':'30 d
 const color=name=>getComputedStyle(document.documentElement).getPropertyValue('--'+name).trim();
 let current=null,controller=null,sequence=0,timer=null;
 const charts=[];
+// Morpho liquidation break-even: Curve price at which selling seized stUSDS repays the debt (redemption / incentive).
+const breakEven=p=>current?.liquidation&&p.referencePrice!=null?p.referencePrice*current.liquidation.breakEvenRatio:null;
 function set(id,text){if($(id))$(id).textContent=text;}
 function direction(el,n){el.classList.remove('positive','negative');if(n!==0)el.classList.add(n>0?'positive':'negative');}
 function theme(next){document.documentElement.dataset.theme=next;try{localStorage.setItem('sky-monitor-theme',next);}catch{}$('theme').setAttribute('aria-label',next==='dark'?'Switch to light theme':'Switch to dark theme');charts.forEach(c=>c.draw());if(typeof holderCharts!=='undefined')holderCharts.forEach(c=>c.draw());}
@@ -49,8 +51,8 @@ class Chart {
     }
     if(this.kind==='buyback'){const s=this.cumulative[this.hover];row(IS_STUSDS?'Deposits':'Protocol',signed(s.buybacks)+' USDS','blue');row(IS_STUSDS?'Withdrawals':'Other net',signed(s.other)+' USDS','red');row(IS_STUSDS?'Net deposits':'Combined',signed(s.net)+' USDS','ink',true);}
     if(this.kind==='liquidity'){row('USDS reserve',compact(p.usds)+' USDS','purple');row(TOKEN+' reserve',compact(p.sky)+' '+TOKEN,'ink');}
-    if(this.kind==='reference'){row('Curve spot',price(p.close)+' USDS','ink');row('Vault reference',price(p.referencePrice)+' USDS','blue');}
-    if(this.kind==='gap'){row('Premium / discount',p.gapBps==null?'—':full(p.gapBps)+' bps','blue');row('Unused capacity',compact(p.capacityUsds)+' USDS','ink');}
+    if(this.kind==='reference'){row('Curve spot',price(p.close)+' USDS','ink');row('Vault reference',price(p.referencePrice)+' USDS','blue');if(breakEven(p)!=null)row('Liquidation break-even',price(breakEven(p))+' USDS','red');}
+    if(this.kind==='gap'){row('Premium / discount',p.gapBps==null?'—':full(p.gapBps)+' bps','blue');if(current.liquidation&&p.gapBps!=null)row('Above liquidation break-even',signed(p.gapBps-current.liquidation.breakEvenGapBps)+' bps','red');row('Unused capacity',compact(p.capacityUsds)+' USDS','ink');}
     tip.hidden=false;const {left,width,start,duration}=this.plot;const x=left+(p.through-start)/duration*width;
     tip.style.left=Math.max(0,Math.min(this.canvas.clientWidth-tip.offsetWidth,x+10))+'px';tip.style.top='12px';
   }
@@ -64,16 +66,16 @@ class Chart {
     if(this.kind==='flow')values=points.flatMap(p=>[p.buyUsds,-p.sellUsds]);
     if(this.kind==='buyback')values=[0,...this.cumulative.flatMap(p=>[p.buybacks,p.other,p.net])];
     if(this.kind==='liquidity')values=points.map(p=>p.usds);
-    if(this.kind==='reference')values=points.flatMap(p=>[p.close,p.referencePrice]).filter(v=>v!=null);
-    if(this.kind==='gap')values=[0,...points.map(p=>p.gapBps).filter(v=>v!=null)];
+    if(this.kind==='reference')values=points.flatMap(p=>[p.close,p.referencePrice,breakEven(p)]).filter(v=>v!=null);
+    if(this.kind==='gap')values=[0,...points.map(p=>p.gapBps).filter(v=>v!=null),...(current.liquidation?[current.liquidation.breakEvenGapBps]:[])];
     const a=axis(Math.min(...values),Math.max(...values),['flow','buyback'].includes(this.kind));
     const x=t=>left+(t-start)/duration*width,y=v=>top+(a.hi-v)/(a.hi-a.lo)*height;
     ctx.font='11px system-ui,sans-serif';ctx.textBaseline='middle';ctx.fillStyle=color('muted');ctx.strokeStyle=color('grid');ctx.lineWidth=1;
     for(const v of a.ticks){const py=y(v);ctx.beginPath();ctx.moveTo(left,py);ctx.lineTo(w-right,py);ctx.stroke();let label;if(['price','reference'].includes(this.kind)){const decimals=Math.max(3,Math.min(8,-Math.floor(Math.log10(a.step))));label=v.toFixed(decimals);}else label=compact(Math.abs(v)<a.step*.001?0:v)+(this.kind==='gap'?' bps':'');ctx.fillText(label,2,py);}
     const drawLine=(values,stroke,anchor=null)=>{ctx.strokeStyle=stroke;ctx.lineWidth=2;ctx.beginPath();let previous=null;if(anchor!==null){ctx.moveTo(x(start),y(anchor));previous=start;}values.forEach((v,i)=>{if(v==null){previous=null;return;}const p=points[i],gap=previous!==null&&p.from>previous;if(previous===null||gap)ctx.moveTo(x(p.through),y(v));else ctx.lineTo(x(p.through),y(v));previous=p.through;});ctx.stroke();};
     if(this.kind==='price'){drawLine(points.map(p=>p.close),color('ink'),points[0].open);if(current.summary){ctx.setLineDash([5,5]);ctx.strokeStyle=color('blue');ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(left,y(current.summary.twap));ctx.lineTo(w-right,y(current.summary.twap));ctx.stroke();ctx.setLineDash([]);}}
-    if(this.kind==='reference'){drawLine(points.map(p=>p.close),color('ink'));drawLine(points.map(p=>p.referencePrice),color('blue'));}
-    if(this.kind==='gap')drawLine(points.map(p=>p.gapBps),color('blue'));
+    if(this.kind==='reference'){if(current.liquidation){ctx.setLineDash([6,4]);drawLine(points.map(breakEven),color('red'));ctx.setLineDash([]);}drawLine(points.map(p=>p.close),color('ink'));drawLine(points.map(p=>p.referencePrice),color('blue'));}
+    if(this.kind==='gap'){if(current.liquidation){const py=y(current.liquidation.breakEvenGapBps);ctx.setLineDash([6,4]);ctx.strokeStyle=color('red');ctx.lineWidth=2;ctx.beginPath();ctx.moveTo(left,py);ctx.lineTo(w-right,py);ctx.stroke();ctx.setLineDash([]);}drawLine(points.map(p=>p.gapBps),color('blue'));}
     if(this.kind==='flow'){points.forEach(p=>{const bw=Math.max(1,Math.min(40,(p.through-p.from)/duration*width*.8)),px=(x(p.from)+x(p.through))/2-bw/2;ctx.fillStyle=color('blue');ctx.fillRect(px,y(p.buybackUsds),bw,y(0)-y(p.buybackUsds));ctx.fillStyle=color('green');ctx.fillRect(px,y(p.buyUsds),bw,y(p.buybackUsds)-y(p.buyUsds));ctx.fillStyle=color('red');ctx.fillRect(px,y(0),bw,y(-p.sellUsds)-y(0));});}
     if(this.kind==='buyback'){drawLine(this.cumulative.map(p=>p.buybacks),color('blue'),0);drawLine(this.cumulative.map(p=>p.other),color('red'),0);drawLine(this.cumulative.map(p=>p.net),color('ink'),0);}
     if(this.kind==='liquidity')drawLine(points.map(p=>p.usds),color('purple'));
@@ -179,8 +181,14 @@ async function loadHolders(seq,signal){try{const response=await fetch('/api/hold
 $('holder-date').addEventListener('input',()=>{holderCursor=Number($('holder-date').value);holderFacts();holderCharts.forEach(c=>{c.hover=-1;c.tooltip().hidden=true;c.draw();});});
 $('distribution-mode').addEventListener('change',()=>holderCharts[1].draw());
 
+function renderLiquidation(v){
+ const l=current?.liquidation,box=$('liquidation-note');if(!box)return;box.hidden=!l;if(!l)return;
+ const bonus=((l.incentive-1)*100).toFixed(2)+'%';set('liquidation-legend','Liquidation break-even (redemption ÷ '+l.incentive.toFixed(4)+')');
+ const head=v?.gapBps==null?null:v.gapBps-l.breakEvenGapBps;
+ box.textContent='Liquidation break-even: '+full(l.breakEvenGapBps)+' bps versus the redemption reference ('+l.markets.length+' Morpho markets, LLTV '+Math.round(l.lltv*100)+'%, liquidation bonus '+bonus+'). '+(head==null?'':head>0?'The Curve price is '+full(head)+' bps above it: a liquidator selling seized stUSDS on Curve makes money.':'The Curve price is '+full(-head)+' bps below it: liquidating and selling on Curve loses money, so liquidations rely on vault redemption capacity.');
+}
 function renderVault(v,summary){
- if(!v)return;
+ renderLiquidation(v);if(!v)return;
  set('vault-reference',price(v.referencePrice)+' USDS');set('vault-nav',price(v.navPrice)+' USDS');
  set('vault-gap',v.gapBps==null?'—':full(v.gapBps)+' bps ('+pct(v.gapPercent)+')');direction($('vault-gap'),v.gapBps||0);
  set('vault-delta',v.deltaUsds.toFixed(6)+' USDS');

@@ -2,6 +2,7 @@ import {test,expect}from'@playwright/test';
 import{readFileSync}from'node:fs';import{gunzipSync}from'node:zlib';
 import {holderSeries,initialState,applyEvent,type HolderEvent,ZERO} from '../src/holders.js';
 import{makePoints,summarize,displayPoint,depth}from'../src/math.js';
+import{liquidation}from'../src/liquidation.js';
 const f=JSON.parse(gunzipSync(readFileSync(new URL('../test/fixtures/study-24h.json.gz',import.meta.url))).toString());
 const points=makePoints(f.snapshots,f.events),latest=f.snapshots.at(-1);
 function holders(snapshots=f.snapshots){const state=initialState(),a='0x'+'1'.repeat(40),b='0x'+'2'.repeat(40);applyEvent(state,{block:0,index:0,tx:'mint',kind:'liquid',from:ZERO,to:a,raw:String(1000000n*10n**18n)});const e:HolderEvent={block:Number(f.snapshots[2].block),index:0,tx:'move',kind:'liquid',from:a,to:b,raw:String(100000n*10n**18n)};applyEvent(state,e);return {data:{...holderSeries(state,[e],snapshots,[]),complete:true},job:null};}
@@ -64,7 +65,7 @@ test('last hour uses the shared selector, five-minute holder snapshots and five-
 
 for(const width of [390,1440])test(`stUSDS charts, vault references and live refresh at ${width}px`,async({page})=>{
  const {makeCurvePoints,displayVault}=await import('../src/curve-math.js');const cf=JSON.parse(gunzipSync(readFileSync(new URL('../test/fixtures/stusds-hour.json.gz',import.meta.url))).toString());const ps=makeCurvePoints(cf.snapshots,cf.events),last=cf.snapshots.at(-1),v=displayVault(last.curve),s=summarize(ps);
- const payload={...data('24h'),latest:{price:Number(last.curve.priceRaw)/1e18,...depth(last),vault:v},summary:s,points:ps.map(displayPoint),vaultEvents:cf.events.filter((e:any)=>e.kind==='deposit'||e.kind==='withdraw').map((e:any)=>({time:e.time,tx:e.tx,kind:e.kind,owner:e.owner,receiver:e.recipient,assets:Number(e.values[0])/1e18,shares:Number(e.values[1])/1e18}))};
+ const payload={...data('24h'),liquidation:liquidation(),latest:{price:Number(last.curve.priceRaw)/1e18,...depth(last),vault:v},summary:s,points:ps.map(displayPoint),vaultEvents:cf.events.filter((e:any)=>e.kind==='deposit'||e.kind==='withdraw').map((e:any)=>({time:e.time,tx:e.tx,kind:e.kind,owner:e.owner,receiver:e.recipient,assets:Number(e.values[0])/1e18,shares:Number(e.values[1])/1e18}))};
  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));await page.setViewportSize({width,height:900});
  await page.route('**/api/dashboard?*',r=>r.fulfill({json:payload}));await page.route('**/api/holders?*',r=>r.fulfill({json:{data:null}}));
  await page.route('**/api/live',r=>r.fulfill({json:{block:'26499999',asOf:'2026-11-25T11:00:00Z',latest:{...payload.latest,price:1.05,vault:{...v,referencePrice:1.10,gapBps:-454.55,gapPercent:-4.5455}}}}));
@@ -73,7 +74,13 @@ for(const width of [390,1440])test(`stUSDS charts, vault references and live ref
  await expect(page.locator('#buyback-spent')).not.toHaveText('—');await expect(page.locator('#vault-quotes tr')).toHaveCount(2);expect(await page.locator('body').evaluate(el=>el.scrollWidth)).toBeLessThanOrEqual(width);
  await page.locator('#flow-chart').focus();await page.keyboard.press('ArrowLeft');await expect(page.locator('#flow-chart + .chart-hover [data-series="green"]')).toBeVisible();await expect(page.locator('#flow-chart + .chart-hover [data-series="blue"]')).toHaveCount(0);
  for(const id of ['reference-chart','gap-chart','buyback-chart']){await page.locator('#'+id).focus();await page.keyboard.press('ArrowLeft');await expect(page.locator('#'+id+' + .chart-hover')).toBeVisible();}
- const average=await page.locator('#twap').textContent();await page.click('#refresh');await expect(page.locator('#spot')).toHaveText('1.050000');await expect(page.locator('#vault-reference')).toHaveText('1.100000 USDS');await expect(page.locator('#twap')).toHaveText(average!);
+ // Liquidation break-even: legend, note and tooltip rows on both charts.
+ await expect(page.locator('#liquidation-legend')).toHaveText('Liquidation break-even (redemption ÷ 1.0438)');
+ await expect(page.locator('#liquidation-note')).toContainText('Liquidation break-even: -420 bps');await expect(page.locator('#liquidation-note')).toContainText('LLTV 86%, liquidation bonus 4.38%');
+ const head=v.gapBps!-liquidation().breakEvenGapBps;await expect(page.locator('#liquidation-note')).toContainText(new Intl.NumberFormat('en-US',{maximumFractionDigits:2}).format(Math.abs(head))+' bps '+(head>0?'above':'below')+' it');
+ await page.locator('#reference-chart').focus();await page.keyboard.press('ArrowLeft');await expect(page.locator('#reference-chart + .chart-hover [data-series="red"]')).toContainText('Liquidation break-even');
+ await page.locator('#gap-chart').focus();await page.keyboard.press('ArrowLeft');await expect(page.locator('#gap-chart + .chart-hover [data-series="red"]')).toContainText('Above liquidation break-even');
+ const average=await page.locator('#twap').textContent();await page.click('#refresh');await expect(page.locator('#spot')).toHaveText('1.050000');await expect(page.locator('#vault-reference')).toHaveText('1.100000 USDS');await expect(page.locator('#liquidation-note')).toContainText('34.55 bps below it');await expect(page.locator('#twap')).toHaveText(average!);
  await page.locator('.recent-vault summary').click();await expect(page.locator('#vault-events tr').first().locator('a').first()).toHaveAttribute('href',/^https:\/\/etherscan.io\/address\/0x/);expect(errors).toEqual([]);
  await page.screenshot({path:`test-results/stusds-${width}.png`,fullPage:true});
 });
