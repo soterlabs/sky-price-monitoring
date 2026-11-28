@@ -52,7 +52,7 @@ class Chart {
     if(this.kind==='buyback'){const s=this.cumulative[this.hover];row(IS_STUSDS?'Deposits':'Protocol',signed(s.buybacks)+' USDS','blue');row(IS_STUSDS?'Withdrawals':'Other net',signed(s.other)+' USDS','red');row(IS_STUSDS?'Net deposits':'Combined',signed(s.net)+' USDS','ink',true);}
     if(this.kind==='liquidity'){row('USDS reserve',compact(p.usds)+' USDS','purple');row(TOKEN+' reserve',compact(p.sky)+' '+TOKEN,'ink');}
     if(this.kind==='reference'){row('Curve spot',price(p.close)+' USDS','ink');row('Vault reference',price(p.referencePrice)+' USDS','blue');if(breakEven(p)!=null)row('Liquidation break-even',price(breakEven(p))+' USDS','red');}
-    if(this.kind==='gap'){row('Premium / discount',p.gapBps==null?'—':full(p.gapBps)+' bps','blue');if(current.liquidation&&p.gapBps!=null)row('Above liquidation break-even',signed(p.gapBps-current.liquidation.breakEvenGapBps)+' bps','red');row('Unused capacity',compact(p.capacityUsds)+' USDS','ink');}
+    if(this.kind==='gap'){row('Premium / discount',p.gapBps==null?'—':full(p.gapBps)+' bps','blue');if(current.liquidation&&p.gapBps!=null)row('Versus liquidation break-even',signed(p.gapBps-current.liquidation.breakEvenGapBps)+' bps','red');row('Unused capacity',compact(p.capacityUsds)+' USDS','ink');}
     tip.hidden=false;const {left,width,start,duration}=this.plot;const x=left+(p.through-start)/duration*width;
     tip.style.left=Math.max(0,Math.min(this.canvas.clientWidth-tip.offsetWidth,x+10))+'px';tip.style.top='12px';
   }
